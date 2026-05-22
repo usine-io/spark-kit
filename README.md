@@ -10,7 +10,7 @@ Spark transforme un Mac Mini en plateforme d'orchestration locale : prototypez d
                        |  API / webhook / export CSV
                        v
   ┌──────────────────────────────────────┐
-  │  Spark  (Mac Mini dans l'entreprise)  │
+  │  Spark  (Mac Mini dans l'entreprise) │
   │                                      │
   │  n8n       pont controle entre les   │
   │            logiciels existants       │
@@ -32,8 +32,8 @@ Spark ne remplace rien. Le CRM reste. L'ERP reste. Le fichier Excel qui marche d
 ```
 1. Preparer le Mac       brew, Colima, pmset             ~10 min
 2. Configurer le site    .env, docker-compose             ~5 min
-3. Lancer la stack       docker compose up -d              ~5 min
-4. Ouvrir le tunnel      cloudflared + DNS Cloudflare     ~10 min
+3. Lancer la stack       docker compose up -d             ~5 min
+4. Ouvrir le tunnel      cloudflared + DNS Cloudflare    ~10 min
    ─────────────────────────────────────────────────────
    → n8n et NocoDB accessibles en HTTPS depuis n'importe ou
 ```
@@ -540,7 +540,7 @@ Les secrets des systemes metier (API keys, tokens des logiciels de l'entreprise)
 ┌──────────────────────────────────────────────┐
 │              Mac Mini (Spark)                │
 │                                              │
-│   cloudflared (host, LaunchAgent)             │
+│   cloudflared (host, LaunchAgent)            │
 │        │                                     │
 │        ▼ http://127.0.0.1:18080              │
 │   ┌─────────┐                                │
@@ -549,19 +549,19 @@ Les secrets des systemes metier (API keys, tokens des logiciels de l'entreprise)
 │        │                                     │
 │   -n8n │  -app (webhooks)  -app (/apps/*)    │
 │    ┌───▼──────────▸┐       ┌──────────────┐  │
-│    │     n8n       │       │  apps/ (html) │  │
-│    │     :5678     │       │  file_server  │  │
+│    │     n8n       │       │  apps/ (html)│  │
+│    │     :5678     │       │  file_server │  │
 │    └───────┬───────┘       └──────────────┘  │
 │            │          -db                    │
-│            │    ┌───────────┐                 │
-│            │    │  NocoDB    │                │
-│            │    │  :8080     │                │
+│            │    ┌───────────┐                │
+│            │    │  NocoDB   │                │
+│            │    │  :8080    │                │
 │            │    └─────┬─────┘                │
 │            │          │                      │
-│            │    ┌─────▼──────────────────┐   │
-│            │    │    PostgreSQL 16       │   │
-│            └───▸│    users: n8n, nocodb  │   │
-│                 └───────────────────────┘   │
+│            │    ┌─────▼─────────────────┐    │
+│            │    │    PostgreSQL 16      │    │
+│            └───▸│    users: n8n, nocodb │    │
+│                 └───────────────────────┘    │
 │                                              │
 │   Volumes: n8n_data, nocodb_data,            │
 │   postgres_data, caddy_*                     │
