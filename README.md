@@ -127,7 +127,7 @@ sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setstealthmode on
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
 # Paquets essentiels
-brew install colima docker docker-compose cloudflared git jq curl
+brew install colima docker docker-compose cloudflared git jq curl tmux
 ```
 
 ```bash
