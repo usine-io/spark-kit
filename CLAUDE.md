@@ -135,6 +135,20 @@ Apres le premier acces aux apps :
 - Les secrets metier (API keys, tokens des logiciels de l'entreprise) vont dans **n8n > Settings > Credentials**, chiffres par `N8N_ENCRYPTION_KEY`.
 - Le `.env` ne contient que les secrets d'infrastructure de la stack.
 
+### Securite de l'exposition externe
+
+Tout site Spark expose 3 sous-domaines via Cloudflare Tunnel (`<prefix>-n8n`, `<prefix>-app`, `<prefix>-db`). Le standard de durcissement par defaut :
+
+- **Cloudflare Access devant tout vhost UI / app / webhook** (pattern Entra ID M365 ou Google OAuth, Free tier jusqu'a 50 users). Aucune page login native n8n/NocoDB ne doit etre joignable directement depuis Internet.
+- **Headers de securite Caddy** (HSTS, X-Frame-Options, etc.) sur **chaque** vhost — bloc copiable dans `SECURITY.md` §2.2.
+- **CORS NocoDB** restreint au sous-domaine `-app` (NocoDB renvoie `*` par defaut, l'override est cote Caddy).
+- **Caddy bind `127.0.0.1`** uniquement (pas `0.0.0.0`) pour eviter l'exposition LAN.
+- **Pas de Uptime Kuma dans le compose client** — monitoring vit sur un master Spark separe.
+
+Hygiene speciale : `CF_API_TOKEN` (scope DNS), `N8N_ENCRYPTION_KEY` et `NOCODB_API_TOKEN` sont des secrets de tres haut privilege. Ne **jamais** afficher leur valeur en sortie de tool/message. Cf. `SECURITY.md` §5.
+
+Detail complet, modele de menace, recettes copy-paste et procedure d'audit recurrent : **`SECURITY.md`**.
+
 ### Workflows n8n
 
 - Un workflow = une responsabilite claire.
