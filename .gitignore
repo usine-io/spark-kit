@@ -2,3 +2,6 @@
 .env.local
 *.log
 .DS_Store
+
+# Agent memory (local, per-machine — not versioned)
+memory/
