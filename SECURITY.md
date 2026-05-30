@@ -44,7 +44,7 @@ Couverture minimum :
 
 **Pour les webhooks consommes par des services externes** (pas par browsers humains) : utiliser un **Service Token** CF, transmis par le service en `CF-Access-Client-Id` + `CF-Access-Client-Secret`. Rotation tous les 90 jours.
 
-> Procedure pas-a-pas (dashboard + Terraform), Service Tokens, `cloudflared access`, verif `200→302` et pieges : [`CF-ACCESS-SETUP.md`](CF-ACCESS-SETUP.md).
+> Procedure pas-a-pas (dashboard + Terraform), Service Tokens, `cloudflared access`, verif `200→302` et pieges : runbook `spark-templates/docs/cf-access.md`.
 
 ### 2.2 Headers de securite cote Caddy
 
@@ -224,4 +224,4 @@ Liste de findings reutilisables pour l'audit. Severite indicative — a affiner 
 - Incident NocoDB Forbidden (PAT v3) : `INCIDENTS.md` INC-2026-05-19
 - Incident NocoDB crashloop (secret URL-decode) : `INCIDENTS.md` INC-2026-05-05
 - PRD type "Auth Entra ID/M365 via CF Access" : voir le repo d'un site deploye (ex. kyklos PRD-011)
-- Runbook mise en place CF Access (dashboard + Terraform + Service Tokens) : [`CF-ACCESS-SETUP.md`](CF-ACCESS-SETUP.md)
+- Runbook mise en place CF Access (dashboard + Terraform + Service Tokens) : `spark-templates/docs/cf-access.md`
