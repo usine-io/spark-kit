@@ -7,6 +7,60 @@
 
 ---
 
+## INC-2026-05-30 — Briefing agent `CLAUDE.md` dupliqué dans 2 repos → drift silencieux
+
+**Site** : transverse (gouvernance kit, pas un site précis)
+**Sévérité** : low (pas de panne runtime ; dette documentaire qui dégrade le briefing agent au fil du temps)
+**Statut** : 🟢 résolu (source de vérité unique actée + repos réconciliés)
+
+### Symptôme
+- Un gabarit `CLAUDE.md` quasi identique existait à la fois dans `spark-kit/spark-kit` (235 lignes) et `spark-kit/templates` (247 lignes).
+- Les deux avaient **divergé sans que personne ne s'en aperçoive** : `templates` portait la « Règle d'or » (skills à charger + 3 pièges N3/W3/C1 en tête), `spark-kit` portait la section « Sécurité de l'exposition externe » + le lien `SECURITY.md`. **Aucun n'était un sur-ensemble de l'autre.**
+- Conséquence : selon le repo copié pour amorcer un nouveau site, l'agent héritait d'un briefing amputé d'une moitié des bonnes pratiques.
+
+### Diagnostic
+```bash
+# Repérer toutes les copies du gabarit
+find ~/projects -iname CLAUDE.md -not -path '*/.git/*'
+
+# Diff des deux génériques amont — révèle les blocs non-recoupés
+diff ~/projects/spark-kit/CLAUDE.md ~/projects/spark-templates/CLAUDE.md
+
+# Dater la divergence (quel repo a bougé sans que l'autre suive)
+for d in spark-kit spark-templates; do
+  git -C ~/projects/$d log -1 --format="%ci %s" -- CLAUDE.md
+done
+```
+
+### Cause racine
+**Un même artefact maintenu dans deux repos diverge toujours** : aucune contrainte ne force la synchro, donc chaque amélioration ponctuelle (sécurité côté kit, règle d'or côté templates) reste locale. Le README de `templates` désignait pourtant déjà le gabarit comme sa responsabilité (« Template du briefing agent à copier dans chaque repo entreprise ») — la copie dans `spark-kit` était une duplication non nécessaire, `spark-kit` étant le repo d'**installation** (boot stack), pas d'usage agent.
+
+### Fix immédiat
+Réconcilier puis dédupliquer, en désignant **`spark-kit/templates/CLAUDE.md` comme source de vérité unique** :
+1. Porter dans `templates` les blocs que seul `spark-kit` avait (section sécurité, liens requalifiés `spark-kit/SECURITY.md`).
+2. Remonter au passage les leçons génériques mûries sur un site live (ici : piège « Endpoints derrière CF Access » — fronts en relatif / scripts host via Caddy local + Host header / bypass `127.0.0.1`), en remplaçant le spécifique par des placeholders `<prefix>`/`<domain>`.
+3. Réduire `spark-kit/CLAUDE.md` à un **stub-pointeur** vers templates (le kit garde `SECURITY.md`/`INCIDENTS.md`/`ROADMAP.md`).
+
+### Fix structurel
+Modèle de flux à respecter pour tout briefing agent :
+```
+templates/CLAUDE.md   ← gabarit canonique (UNIQUE)
+        │ copié + spécialisé à l'install
+        ▼
+<site>/CLAUDE.md      ← instance live, découvre les leçons
+        │ leçons génériques remontées par PR
+        ▲
+spark-kit/   ← SECURITY.md / INCIDENTS.md / ROADMAP.md (jamais de copie du gabarit)
+```
+Les distinctions instance↔gabarit (network `acme_spark` vs `spark_spark`, hostnames `acme-*` vs `<prefix>-*`) sont de la **spécialisation attendue**, pas du drift.
+
+### Leçons exploitables
+- [ ] Ne jamais dupliquer un gabarit (`CLAUDE.md`, `.env.example`, Caddyfile type…) dans deux repos : une seule source, les autres pointent.
+- [ ] Toute amélioration générique découverte sur un site se remonte dans `templates`, pas seulement dans l'instance.
+- [ ] Audit périodique : `find ~/projects -iname CLAUDE.md` + `diff` entre copies amont → toute divergence non triviale = drift à réconcilier.
+
+---
+
 ## INC-2026-05-19 — MCP `nocodb-mcp` retourne Forbidden malgré un PAT valide
 
 **Site** : anonymisé (site Spark avec NocoDB 2026.04.5+)
