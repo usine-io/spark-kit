@@ -44,10 +44,10 @@ Réconcilier puis dédupliquer, en désignant **`spark-kit/templates/CLAUDE.md` 
 ### Fix structurel
 Modèle de flux à respecter pour tout briefing agent :
 ```
-templates/CLAUDE.md   ← gabarit canonique (UNIQUE)
+spark-kit/templates/CLAUDE.md   ← gabarit canonique (UNIQUE)
         │ copié + spécialisé à l'install
         ▼
-<site>/CLAUDE.md      ← instance live, découvre les leçons
+<site>/CLAUDE.md                ← instance live, découvre les leçons
         │ leçons génériques remontées par PR
         ▲
 spark-kit/   ← SECURITY.md / INCIDENTS.md / ROADMAP.md (jamais de copie du gabarit)

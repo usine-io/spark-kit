@@ -8,7 +8,7 @@ Le gabarit CLAUDE.md a copier dans chaque repo entreprise est **canonique dans l
 
 - `spark-kit/templates` → `CLAUDE.md` (le seul gabarit a jour)
 
-Ne pas recreer ici une copie du briefing : elle redivergerait. Toute amelioration generalisable se porte dans `templates/CLAUDE.md`.
+Ne pas recreer ici une copie du briefing : elle redivergerait. Toute amelioration generalisable se porte dans `spark-kit/templates/CLAUDE.md`.
 
 ## Ce que `spark-kit` contient
 
@@ -22,7 +22,7 @@ Ne pas recreer ici une copie du briefing : elle redivergerait. Toute amelioratio
 ## Flux des leçons
 
 ```
-templates/CLAUDE.md   ← gabarit canonique (unique)
+spark-kit/templates/CLAUDE.md   ← gabarit canonique (unique)
         │ copie + specialise a l'install
         ▼
 <entreprise>/CLAUDE.md (instance live)   ← decouvre des leçons
