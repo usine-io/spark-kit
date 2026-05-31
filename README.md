@@ -4,6 +4,13 @@
 
 Spark transforme un Mac Mini en plateforme d'orchestration locale : prototypez des connexions entre vos logiciels existants, automatisez vos flux, donnez a vos equipes des outils qu'elles utilisent vraiment — sans toucher a ce qui marche deja.
 
+Spark vous permet ainsi de créer des prototypes à plusieurs étages : 
+- Browser extensions : décuplez la puissande de vos logiciels web
+- Automatisation simple : interconnexion de logiciels
+- Automatisation + Data : travail sur des données métier déportées
+- Automatisation + Data + NEW LOGICIEL : POC d'intégration de nouveaux logiciels metiers avec le legacy
+- Automatisation + Data + Code html : Création de POCs web complets
+
 ```
   Logiciels metier (CRM, ERP, WMS, facturation, support...)
                        |  source de verite business — INTOUCHABLE
