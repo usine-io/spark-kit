@@ -27,7 +27,9 @@ Spark transforme un Mac Mini en plateforme d'orchestration locale : prototypez d
 
 Spark ne remplace rien. Le CRM reste. L'ERP reste. Le fichier Excel qui marche depuis 2012 reste. Spark les fait parler entre eux — et le jour ou vous deciderez d'en changer un, les connexions seront deja cartographiees. Les secrets des logiciels connectes sont chiffres dans le coffre-fort natif de n8n — pas de mots de passe en clair dans des fichiers.
 
-### 4 etapes, 30 minutes
+Spark se lit comme **3 briques empilables** : une solution technique qui tourne en 30 min, puis deux briques optionnelles qui la rendent exploitable en production.
+
+### Brique 1 — la solution technique · 4 etapes, 30 minutes
 
 ```
 1. Preparer le Mac       brew, Colima, pmset             ~10 min
@@ -38,7 +40,15 @@ Spark ne remplace rien. Le CRM reste. L'ERP reste. Le fichier Excel qui marche d
    → n8n et NocoDB accessibles en HTTPS depuis n'importe ou
 ```
 
-Ces 30 minutes livrent la **solution technique** : une stack qui tourne et qui est joignable. Spark se lit ensuite comme **3 briques empilables** — la technique ci-dessus, puis deux briques optionnelles qui la rendent exploitable en production : des **recommandations de securite** (CF Access + durcissement) et une **brique de sauvegarde deployable** (backup 3-2-1 scripte). Voir [Aller plus loin](#aller-plus-loin--durcir-et-sauvegarder-optionnel).
+### Briques 2 & 3 — pour passer en production (optionnelles)
+
+```
++ Securite      CF Access + headers Caddy + CORS NocoDB     ~60-90 min   recommande des qu'il y a de la donnee reelle
++ Sauvegarde    backup 3-2-1 : dump + volumes + drill de    ~45-60 min   recommande (offsite = +~25 min)
+                restore + offsite rclone (provider au choix)
+```
+
+Detail de chaque brique, chiffrage et options a prendre (Cloudflare Zero Trust, remote offsite) : [Aller plus loin](#aller-plus-loin--durcir-et-sauvegarder-optionnel).
 
 ---
 
