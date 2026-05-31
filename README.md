@@ -38,6 +38,8 @@ Spark ne remplace rien. Le CRM reste. L'ERP reste. Le fichier Excel qui marche d
    → n8n et NocoDB accessibles en HTTPS depuis n'importe ou
 ```
 
+Ces 30 minutes livrent la **solution technique** : une stack qui tourne et qui est joignable. Spark se lit ensuite comme **3 briques empilables** — la technique ci-dessus, puis deux briques optionnelles qui la rendent exploitable en production : des **recommandations de securite** (CF Access + durcissement) et une **brique de sauvegarde deployable** (backup 3-2-1 scripte). Voir [Aller plus loin](#aller-plus-loin--durcir-et-sauvegarder-optionnel).
+
 ---
 
 ## Stack
@@ -523,6 +525,32 @@ Les trois doivent repondre en HTTPS avec un status 200 ou 302.
 Au premier acces, n8n demande de creer un compte owner. Ce compte est le seul admin — noter l'email et le mot de passe.
 
 Les secrets des systemes metier (API keys, tokens des logiciels de l'entreprise) seront ensuite stockes dans **n8n > Settings > Credentials** — chiffres en base par `N8N_ENCRYPTION_KEY`, jamais en clair dans des fichiers.
+
+---
+
+## Aller plus loin — durcir et sauvegarder (optionnel)
+
+La stack cœur ci-dessus est un prototype joignable. Deux briques optionnelles, **independantes l'une de l'autre**, la rendent exploitable en production. Chacune est documentee comme un "step" dans [`templates/setup-skeleton/`](https://github.com/spark-kit/templates/tree/main/setup-skeleton).
+
+### Brique securite — authentification et durcissement · ~60-90 min
+
+Recommande des qu'on y met de la donnee reelle : sans elle, les pages de login n8n/NocoDB et les webhooks/ecrans exposes sont publics (devinables via certificate transparency / scan DNS).
+
+- **Couvre** : Cloudflare Access devant `-n8n`/`-app`/`-db`, headers de securite Caddy (HSTS, X-Frame...), override CORS NocoDB.
+- **Options Cloudflare a prendre** : compte **Zero Trust** activé (Free, ≤50 users) ; un **IdP** (Entra ID M365 / Google) **ou** **One-time PIN** par email (zero config) ; un **Service Token** par machine qui doit franchir Access (CLI host, callback SaaS) — rotation 90j ; (recommande) **WAF + Rate Limiting** sur la zone.
+- **Reversible a 100%** : supprimer l'application Access = retour immediat a l'etat non protege, aucun impact tunnel/DNS.
+- **Doc** : standard [`SECURITY.md`](SECURITY.md), runbook pas-a-pas [`templates/docs/cf-access.md`](https://github.com/spark-kit/templates/blob/main/docs/cf-access.md), step [`setup-skeleton/03-securite-cf-access/`](https://github.com/spark-kit/templates/tree/main/setup-skeleton/03-securite-cf-access).
+
+### Brique sauvegarde — backup 3-2-1 deployable · ~45-60 min
+
+Scripts generiques (pg_dumpall + tar des volumes + **drill de restore** + planification launchd), resolus par labels Docker Compose, sans nom de client en dur.
+
+- **Couches locales** (dump 6h + volumes quotidien + drill hebdo) : ~45-60 min, aucune dependance externe, testable immediatement.
+- **Couche offsite** : +~25 min, necessite un **compte Backblaze B2** (bucket + key pair write-only). `rclone copy` + retention par age (pas `sync`, qui casserait la retention offsite longue).
+- **Critere de validation** : la **drill de restore** passe — un backup non teste n'est pas un backup.
+- **Doc** : step [`setup-skeleton/04-strategie-backup-3-2-1/`](https://github.com/spark-kit/templates/tree/main/setup-skeleton/04-strategie-backup-3-2-1).
+
+> Les deux briques sont independantes : on peut poser la sauvegarde sans la securite, ou l'inverse. Les chiffrages sont des ordres de grandeur "premiere fois, a la main" (dashboard, pas IaC).
 
 ---
 
