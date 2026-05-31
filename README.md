@@ -546,7 +546,7 @@ Recommande des qu'on y met de la donnee reelle : sans elle, les pages de login n
 Scripts generiques (pg_dumpall + tar des volumes + **drill de restore** + planification launchd), resolus par labels Docker Compose, sans nom de client en dur.
 
 - **Couches locales** (dump 6h + volumes quotidien + drill hebdo) : ~45-60 min, aucune dependance externe, testable immediatement.
-- **Couche offsite** : +~25 min, necessite un **compte Backblaze B2** (bucket + key pair write-only). `rclone copy` + retention par age (pas `sync`, qui casserait la retention offsite longue).
+- **Couche offsite** : +~25 min, agnostique au provider — un **remote rclone au choix** (S3/MinIO, Backblaze B2, Google Drive, OneDrive, SFTP, WebDAV…), configure par l'installateur. `rclone copy` + retention par age (pas `sync`, qui casserait la retention offsite longue).
 - **Critere de validation** : la **drill de restore** passe — un backup non teste n'est pas un backup.
 - **Doc** : step [`setup-skeleton/04-strategie-backup-3-2-1/`](https://github.com/spark-kit/templates/tree/main/setup-skeleton/04-strategie-backup-3-2-1).
 
