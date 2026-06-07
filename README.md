@@ -125,6 +125,33 @@ sw_vers           # macOS 14+
 
 ---
 
+## Vue d'ensemble
+
+L'installation se fait en 4 etapes depuis un terminal sur le Mac, puis se verifie avec un smoke test pilote par Claude Code.
+
+```
+Etape 1   Preparer le Mac         outils, acces distant, Docker         ~10 min
+Etape 2   Configurer le site      repos, secrets, fichiers de config    ~10 min
+Etape 3   Lancer la stack         docker compose up                     ~5 min
+Etape 4   Ouvrir le tunnel        cloudflared + DNS Cloudflare          ~10 min
+          ─────────────────────────────────────────────────────────────
+          Premier acces            comptes admin, cles API
+          Smoke test               ouvrir Claude Code dans ~/spark
+```
+
+A la fin de ces etapes, le dossier `~/spark/` sur le Mac ressemble a ca :
+
+```
+~/spark/
+├── templates/      ← clone du repo spark-kit/templates (methodologie, scripts setup, skills)
+├── infra/          ← docker-compose, .env, config, scripts, apps
+└── discovery/      ← fiches logiciel, PRD, questionnaires
+```
+
+L'aboutissement : ouvrir Claude Code dans `~/spark/` et lancer le smoke test (`templates/crash-test/`). Si le test passe, la stack est operationnelle et l'agent a acces a tout.
+
+---
+
 ## Etape 1 — Preparer le Mac
 
 ```bash
@@ -139,14 +166,31 @@ sudo pmset -a displaysleep 0
 # Firewall en mode stealth
 sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on
 sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setstealthmode on
+
+# Connexion a distance (SSH) — piloter le Mac sans ecran
+sudo systemsetup -setremotelogin on
+
+# Gestion a distance (ecran partage / VNC) — observer et controler
+sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+  -activate -configure -access -on -restart -agent -privs -all
 ```
 
 ```bash
 # Homebrew (si pas deja installe)
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
+# Homebrew affiche 2 commandes en fin d'installation pour ajouter brew au PATH.
+# Sur Apple Silicon c'est :
+echo >> ~/.zprofile
+echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+eval "$(/opt/homebrew/bin/brew shellenv)"
+
 # Paquets essentiels
-brew install colima docker docker-compose cloudflared git jq curl tmux
+brew install colima docker docker-compose cloudflared git jq curl tmux mole
+
+# Tailscale — VPN mesh pour acces distant securise au Mac
+brew install --cask tailscale
+# Ouvrir Tailscale.app et s'authentifier une premiere fois
 ```
 
 ```bash
@@ -166,9 +210,12 @@ Tout au long de cette etape, remplacer `acme` par le slug de l'entreprise et `ex
 ### Creer l'arborescence
 
 ```bash
-mkdir -p ~/spark/{config/postgres,apps,data,logs,backups,scripts}
-cd ~/spark
+mkdir -p ~/spark/{infra/{config/postgres,apps,logs,backups,scripts},discovery}
+git clone https://github.com/spark-kit/templates.git ~/spark/templates
+cd ~/spark/infra
 ```
+
+Le repo `templates` contient la methodologie, les scripts de setup avances (securite, backup), les skills Claude Code et le smoke test. Toute la suite de l'installation travaille dans `~/spark/infra/`.
 
 ### Generer les secrets
 
@@ -211,7 +258,7 @@ chmod 600 .env
 
 ### Creer les fichiers de config
 
-**`config/postgres/init-db.sh`** — cree les bases et les utilisateurs separes :
+**`infra/config/postgres/init-db.sh`** — cree les bases et les utilisateurs separes :
 
 ```bash
 cat > config/postgres/init-db.sh <<'INITDB'
@@ -228,7 +275,7 @@ INITDB
 chmod +x config/postgres/init-db.sh
 ```
 
-**`config/Caddyfile`** — reverse proxy interne, pas de TLS (Cloudflare s'en charge) :
+**`infra/config/Caddyfile`** — reverse proxy interne, pas de TLS (Cloudflare s'en charge) :
 
 ```bash
 cat > config/Caddyfile <<'CADDY'
@@ -395,7 +442,7 @@ Points cles :
 ## Etape 3 — Lancer la stack
 
 ```bash
-cd ~/spark
+cd ~/spark/infra
 docker compose up -d
 ```
 
@@ -467,7 +514,7 @@ cloudflared tunnel route dns spark-acme acme-app.example.com
 cloudflared tunnel route dns spark-acme acme-db.example.com
 ```
 
-Ou via l'API CF pour plus de controle (voir `scripts/tunnel-up.sh`).
+Ou via l'API CF pour plus de controle (voir `infra/scripts/tunnel-up.sh`).
 
 ### 4.5 — Lancer cloudflared
 
@@ -498,9 +545,9 @@ cat > ~/Library/LaunchAgents/com.spark.cloudflared.plist <<PLIST
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>${HOME}/spark/logs/cloudflared.log</string>
+    <string>${HOME}/spark/infra/logs/cloudflared.log</string>
     <key>StandardErrorPath</key>
-    <string>${HOME}/spark/logs/cloudflared.err</string>
+    <string>${HOME}/spark/infra/logs/cloudflared.err</string>
 </dict>
 </plist>
 PLIST
@@ -510,7 +557,7 @@ launchctl load ~/Library/LaunchAgents/com.spark.cloudflared.plist
 
 ### 4.6 — Mettre a jour le .env
 
-Completer les variables tunnel dans `~/spark/.env` :
+Completer les variables tunnel dans `~/spark/infra/.env` :
 
 ```bash
 SPARK_TUNNEL_ID=<UUID>
@@ -543,11 +590,31 @@ Au premier acces, n8n demande de creer un compte owner. Ce compte est le seul ad
 
 Les secrets des systemes metier (API keys, tokens des logiciels de l'entreprise) seront ensuite stockes dans **n8n > Settings > Credentials** — chiffres en base par `N8N_ENCRYPTION_KEY`, jamais en clair dans des fichiers.
 
+### Smoke test
+
+Copier le briefing agent depuis le repo templates, puis ouvrir Claude Code :
+
+```bash
+cp ~/spark/templates/CLAUDE.md ~/spark/CLAUDE.md
+cd ~/spark
+claude
+```
+
+Claude Code charge le `CLAUDE.md` a la racine et a acces a toute l'arborescence : `infra/` (stack live), `templates/` (methodologie, scripts, skills), `discovery/` (fiches projet).
+
+Lancer le smoke test :
+
+```
+> Lance le smoke test dans templates/crash-test/
+```
+
+Le smoke test verifie la liaison n8n ↔ NocoDB (ecriture, trigger, lecture). S'il passe, la stack est operationnelle. Detail du test : [`templates/crash-test/README.md`](https://github.com/spark-kit/templates/blob/main/crash-test/README.md).
+
 ---
 
 ## Aller plus loin — durcir et sauvegarder (optionnel)
 
-La stack cœur ci-dessus est un prototype joignable. Deux briques optionnelles, **independantes l'une de l'autre**, la rendent exploitable en production. Chacune est documentee comme un "step" dans [`templates/setup-skeleton/`](https://github.com/spark-kit/templates/tree/main/setup-skeleton).
+La stack cœur ci-dessus est un prototype joignable. Deux briques optionnelles, **independantes l'une de l'autre**, la rendent exploitable en production. Chacune est documentee comme un "step" dans `templates/setup-skeleton/` (clone en local dans `~/spark/templates/`).
 
 ### Brique securite — authentification et durcissement · ~60-90 min
 
@@ -676,15 +743,33 @@ colima start --cpu 4 --memory 6 --disk 60
 
 ## Organisation du projet
 
+**Deux repos GitHub** dans l'organisation `spark-kit` :
+
+| Repo | Contenu |
+|------|---------|
+| **spark-kit** (ce repo) | Meta : README installation, SECURITY.md, INCIDENTS.md, ROADMAP.md |
+| **templates** | Methodologie, scripts setup, skills Claude Code, smoke test |
+
+**Sur le Mac**, les deux repos se retrouvent dans `~/spark/` a cote des fichiers du site :
+
 ```
-spark-kit/
-├── spark-kit        ← ce repo (meta, documentation, incidents)
-├── templates/       ← methodologie : ingest legacy → PRD → POC
-├── CLAUDE.md        ← guide agent pour travailler avec la stack
-└── <entreprise>/    ← un repo par deploiement (prive)
-       ├── infra/           docker-compose, scripts, config
-       ├── discovery/       questionnaire, fiches logiciel, PRD
-       └── LESSONS-LEARNED.md
+~/spark/                              ← dossier de travail sur le Mac
+├── templates/                        ← clone de spark-kit/templates (read-only)
+│   ├── setup-skeleton/               scripts de setup avances (securite, backup)
+│   ├── crash-test/                   smoke test
+│   ├── skills/                       skills Claude Code specifiques Spark
+│   ├── docs/                         runbooks (Caddy, CF Access, cloudflared)
+│   ├── CLAUDE.md                     gabarit agent a copier/adapter
+│   └── BIENVENUE.md, GETTING-STARTED.md, prd-template.md...
+├── infra/                            ← stack live (docker-compose, .env, config)
+│   ├── .env                          secrets (gitignore)
+│   ├── docker-compose.yml
+│   ├── config/
+│   ├── apps/
+│   ├── scripts/
+│   ├── logs/
+│   └── backups/
+└── discovery/                        ← fiches logiciel, PRD, questionnaires
 ```
 
 ---
@@ -719,7 +804,7 @@ Apres le premier acces (etape 4), creer les tokens dans chaque app :
 Puis relancer la stack pour que le MCP n8n prenne sa cle :
 
 ```bash
-cd ~/spark && docker compose up -d
+cd ~/spark/infra && docker compose up -d
 ```
 
 Le token NocoDB est lu depuis `.env` par le CLI au runtime (pas besoin de restart).
