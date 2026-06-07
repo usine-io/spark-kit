@@ -583,6 +583,10 @@ cloudflared tunnel --config ~/.cloudflared/config-spark.yml run
 Pour un fonctionnement permanent (survit aux redemarrages), installer un LaunchAgent :
 
 ```bash
+mkdir -p ~/Library/LaunchAgents
+```
+
+```bash
 cat > ~/Library/LaunchAgents/com.spark.cloudflared.plist <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -609,7 +613,11 @@ cat > ~/Library/LaunchAgents/com.spark.cloudflared.plist <<PLIST
 </dict>
 </plist>
 PLIST
+```
 
+Charger le LaunchAgent (sans sudo — c'est un agent utilisateur, pas un daemon systeme) :
+
+```bash
 launchctl load ~/Library/LaunchAgents/com.spark.cloudflared.plist
 ```
 
