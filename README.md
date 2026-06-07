@@ -174,9 +174,10 @@ sudo systemsetup -setremotelogin on
 sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
 
 # Auto-login — les LaunchAgents (Colima, cloudflared) ont besoin d'une session ouverte
-# Configurer dans : Reglages > Utilisateurs et groupes > Ouverture de session automatique
-# Ou en ligne de commande :
-sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser "$(whoami)"
+# Configurer dans : Reglages Systeme > Utilisateurs et groupes > Ouverture de session automatique
+# Choisir le compte utilisateur dans le menu deroulant.
+# (la commande `defaults write autoLoginUser` ne prend pas sur les macOS recents,
+#  passer par l'interface graphique)
 ```
 
 ```bash
@@ -676,7 +677,7 @@ echo "=== Tunnel ==="
 curl -sI "https://${SPARK_PREFIX}-n8n.${SPARK_DOMAIN}" | head -1
 
 echo "=== Tailscale ==="
-tailscale status --json | jq -r '.Self.Online' 2>/dev/null && echo "OK" || echo "FAIL"
+/Applications/Tailscale.app/Contents/MacOS/Tailscale status --json 2>/dev/null | jq -r '.Self.Online' && echo "OK" || echo "FAIL"
 ```
 
 Tout doit afficher OK. Si un service manque, verifier le LaunchAgent correspondant avec `launchctl list | grep spark`.
