@@ -512,6 +512,16 @@ A ce stade, les services tournent et repondent via Caddy sur `127.0.0.1:18080`, 
 
 Le tunnel Cloudflare cree une connexion sortante securisee entre le Mac et le reseau Cloudflare. Le trafic arrive en HTTPS chez CF, transite par le tunnel chiffre, et atterrit sur Caddy en HTTP local. Aucun port entrant a ouvrir, aucun certificat a gerer.
 
+**Pre-requis** : le domaine utilise (`SPARK_DOMAIN`) doit avoir ses **nameservers pointes vers Cloudflare** (zone active sur le dashboard CF). C'est ce qui permet a Cloudflare de gerer le TLS et les DNS automatiquement.
+
+Cette etape va creer **trois sous-domaines** sur ce domaine :
+
+| Sous-domaine | Service | Acces |
+|--------------|---------|-------|
+| `<prefix>-n8n.<domain>` | Editeur n8n | Builder uniquement |
+| `<prefix>-app.<domain>` | Webhooks + apps metier statiques | Equipes |
+| `<prefix>-db.<domain>` | NocoDB | Equipes |
+
 ```
 Internet → Cloudflare Edge (HTTPS) → tunnel chiffre → cloudflared (Mac) → Caddy :18080 → n8n/NocoDB
 ```
