@@ -493,17 +493,18 @@ cd ~/spark/infra
 docker-compose up -d
 ```
 
-Verifier que les services repondent (attendre ~15s) :
+Verifier que les services repondent via Caddy (attendre ~15s) :
 
 ```bash
-for svc in n8n:5678 nocodb:8080; do
-  name="${svc%%:*}" port="${svc##*:}"
-  code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:$port" 2>/dev/null || echo "000")
-  printf "  %-15s %s\n" "$name" "$([[ $code =~ ^(200|301|302)$ ]] && echo 'OK' || echo "FAIL ($code)")"
+source .env
+for svc in n8n db; do
+  host="${SPARK_PREFIX}-${svc}.${SPARK_DOMAIN}"
+  code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: $host" "http://localhost:${SPARK_HOST_HTTP_PORT:-18080}" 2>/dev/null || echo "000")
+  printf "  %-15s %s\n" "$svc" "$([[ $code =~ ^(200|301|302)$ ]] && echo 'OK' || echo "FAIL ($code)")"
 done
 ```
 
-A ce stade, les services tournent mais ne sont accessibles que depuis le Mac lui-meme (port 18080 sur 127.0.0.1). L'etape suivante ouvre l'acces HTTPS.
+A ce stade, les services tournent et repondent via Caddy sur `127.0.0.1:18080`, mais ne sont pas encore accessibles depuis l'exterieur. L'etape suivante ouvre l'acces HTTPS via le tunnel.
 
 ---
 
