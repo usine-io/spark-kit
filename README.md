@@ -642,6 +642,41 @@ curl -sI https://acme-db.example.com | head -5
 
 Les trois doivent repondre en HTTPS avec un status 200 ou 302.
 
+### 4.7 — Test de reboot
+
+Verifier que tout redemarre sans intervention apres une coupure :
+
+```bash
+sudo reboot
+```
+
+Attendre ~2 min, puis se reconnecter en SSH (ou via Tailscale) et lancer la verification :
+
+```bash
+source ~/spark/infra/.env
+
+echo "=== Colima ==="
+colima status && echo "OK" || echo "FAIL"
+
+echo "=== Containers ==="
+docker ps --format "{{.Names}}\t{{.Status}}" | grep -E "spark"
+
+echo "=== Caddy → services ==="
+for svc in n8n db; do
+  host="${SPARK_PREFIX}-${svc}.${SPARK_DOMAIN}"
+  code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: $host" "http://localhost:${SPARK_HOST_HTTP_PORT:-18080}" 2>/dev/null || echo "000")
+  printf "  %-15s %s\n" "$svc" "$([[ $code =~ ^(200|301|302)$ ]] && echo 'OK' || echo "FAIL ($code)")"
+done
+
+echo "=== Tunnel ==="
+curl -sI "https://${SPARK_PREFIX}-n8n.${SPARK_DOMAIN}" | head -1
+
+echo "=== Tailscale ==="
+tailscale status --json | jq -r '.Self.Online' 2>/dev/null && echo "OK" || echo "FAIL"
+```
+
+Tout doit afficher OK. Si un service manque, verifier le LaunchAgent correspondant avec `launchctl list | grep spark`.
+
 ---
 
 ## Premier acces
