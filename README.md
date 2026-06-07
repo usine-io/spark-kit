@@ -694,6 +694,28 @@ Tout doit afficher OK. Si un service manque, verifier le LaunchAgent corresponda
 
 Au premier acces, n8n demande de creer un compte owner. Ce compte est le seul admin — noter l'email et le mot de passe.
 
+### Obtenir les cles API
+
+1. **n8n** : Settings > API > Create API Key → copier la valeur
+2. **NocoDB** : Team & Settings > Tokens > Add New Token → copier la valeur **immediatement** (NocoDB ne la re-affiche jamais)
+
+Ecrire les deux tokens dans le `.env` :
+
+```bash
+nano ~/spark/infra/.env
+# Remplir les lignes :
+#   N8N_API_KEY=<cle copiee>
+#   NOCODB_API_TOKEN=<token copie>
+```
+
+Puis relancer la stack pour que le MCP n8n prenne sa cle :
+
+```bash
+cd ~/spark/infra && docker-compose up -d
+```
+
+Le token NocoDB est lu depuis `.env` par le CLI au runtime (pas besoin de restart).
+
 Les secrets des systemes metier (API keys, tokens des logiciels de l'entreprise) seront ensuite stockes dans **n8n > Settings > Credentials** — chiffres en base par `N8N_ENCRYPTION_KEY`, jamais en clair dans des fichiers.
 
 ### Smoke test
