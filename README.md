@@ -172,6 +172,11 @@ sudo systemsetup -setremotelogin on
 
 # Partage d'ecran (VNC) — observer et controler
 sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
+
+# Auto-login — les LaunchAgents (Colima, cloudflared) ont besoin d'une session ouverte
+# Configurer dans : Reglages > Utilisateurs et groupes > Ouverture de session automatique
+# Ou en ligne de commande :
+sudo defaults write /Library/Preferences/com.apple.loginwindow autoLoginUser "$(whoami)"
 ```
 
 ```bash
@@ -199,6 +204,48 @@ colima start --cpu 4 --memory 4 --disk 60 --network-address --vm-type vz --vz-ro
 # Verifier que Docker repond
 docker info
 ```
+
+Colima doit redemarrer automatiquement apres un reboot. Installer un LaunchAgent :
+
+```bash
+cat > ~/Library/LaunchAgents/com.spark.colima.plist <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.spark.colima</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/colima</string>
+        <string>start</string>
+        <string>--cpu</string>
+        <string>4</string>
+        <string>--memory</string>
+        <string>4</string>
+        <string>--disk</string>
+        <string>60</string>
+        <string>--network-address</string>
+        <string>--vm-type</string>
+        <string>vz</string>
+        <string>--vz-rosetta</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>${HOME}/spark/infra/logs/colima.log</string>
+    <key>StandardErrorPath</key>
+    <string>${HOME}/spark/infra/logs/colima.err</string>
+</dict>
+</plist>
+PLIST
+
+launchctl load ~/Library/LaunchAgents/com.spark.colima.plist
+```
+
+> **Chaine de demarrage apres reboot** : auto-login → session utilisateur → LaunchAgents → Colima (Docker) → cloudflared (tunnel). Tailscale demarre via Login Items (configure a la premiere ouverture de l'app).
 
 ---
 
