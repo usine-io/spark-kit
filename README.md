@@ -199,7 +199,7 @@ brew install --cask tailscale
 
 ```bash
 # Demarrer Colima
-colima start --cpu 4 --memory 4 --disk 60 --network-address --vm-type vz --vz-rosetta
+colima start --cpu 4 --memory 4 --disk 60 --network-address --vm-type vz
 
 # Verifier que Docker repond
 docker info
@@ -215,6 +215,11 @@ cat > ~/Library/LaunchAgents/com.spark.colima.plist <<PLIST
 <dict>
     <key>Label</key>
     <string>com.spark.colima</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
     <key>ProgramArguments</key>
     <array>
         <string>/opt/homebrew/bin/colima</string>
@@ -228,7 +233,6 @@ cat > ~/Library/LaunchAgents/com.spark.colima.plist <<PLIST
         <string>--network-address</string>
         <string>--vm-type</string>
         <string>vz</string>
-        <string>--vz-rosetta</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
