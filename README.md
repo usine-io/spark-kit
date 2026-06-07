@@ -466,6 +466,7 @@ services:
       LOG_LEVEL: error
       PORT: "3000"
       N8N_MCP_TELEMETRY_DISABLED: "true"
+      WEBHOOK_SECURITY_MODE: permissive
     deploy:
       resources:
         limits:
@@ -488,6 +489,7 @@ Points cles :
 - Caddy ecoute sur `127.0.0.1:18080` — pas accessible depuis le reseau, uniquement via cloudflared
 - PostgreSQL cree des **utilisateurs separes** (n8n, nocodb) avec des mots de passe distincts
 - NocoDB utilise `NC_DB_JSON` (objet) et non `NC_DB` (URL) — evite les crashloops si le password contient des caracteres speciaux
+- `WEBHOOK_SECURITY_MODE=permissive` sur n8n-mcp — le MCP bloque les IPs privees par defaut (protection SSRF), mais il doit joindre `http://n8n:5678` sur le reseau Docker interne. Le mode `permissive` autorise localhost et IPs privees tout en bloquant les endpoints cloud metadata. Safe car le container n'est expose sur aucun port public.
 
 ---
 
@@ -961,6 +963,7 @@ exec docker run -i --rm \
   -e "N8N_API_URL=http://n8n:5678" \
   -e "N8N_API_KEY=${N8N_API_KEY}" \
   -e N8N_MCP_TELEMETRY_DISABLED=true \
+  -e WEBHOOK_SECURITY_MODE=permissive \
   ghcr.io/czlonkowski/n8n-mcp:latest
 MCP
 chmod +x scripts/mcp-n8n.sh
