@@ -191,7 +191,7 @@ echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
 eval "$(/opt/homebrew/bin/brew shellenv)"
 
 # Paquets essentiels
-brew install colima docker docker-compose cloudflared git jq curl tmux mole
+brew install colima docker docker-compose cloudflared git jq curl tmux mole node
 
 # Tailscale — VPN mesh pour acces distant securise au Mac
 brew install --cask tailscale
@@ -730,13 +730,19 @@ claude
 
 Claude Code charge le `CLAUDE.md` a la racine et a acces a toute l'arborescence : `infra/` (stack live), `templates/` (methodologie, scripts, skills), `discovery/` (fiches projet).
 
-Lancer le smoke test :
+Premier prompt a coller :
 
 ```
-> Lance le smoke test dans templates/crash-test/
+Nouveau site Spark, la plomberie est posee (infra/, tunnel, containers up).
+Avant de builder quoi que ce soit :
+1. Lis templates/GETTING-STARTED.md et templates/CLAUDE.md — c'est ta reference.
+2. Verifie ton outillage : skills installes (npx), MCP n8n connecte, CLI NocoDB fonctionnel.
+3. Installe ce qui manque.
+4. Lance le smoke test dans templates/crash-test/ pour valider la liaison n8n ↔ NocoDB.
+Rapport a chaque etape.
 ```
 
-Le smoke test verifie la liaison n8n ↔ NocoDB (ecriture, trigger, lecture). S'il passe, la stack est operationnelle. Detail du test : [`templates/crash-test/README.md`](https://github.com/spark-kit/templates/blob/main/crash-test/README.md).
+Le smoke test verifie la liaison n8n ↔ NocoDB (ecriture, trigger, lecture). S'il passe, la stack est operationnelle et l'agent est pret a builder. Detail du test : [`templates/crash-test/README.md`](https://github.com/spark-kit/templates/blob/main/crash-test/README.md).
 
 ---
 
