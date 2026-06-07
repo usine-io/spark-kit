@@ -41,7 +41,7 @@ Spark se lit comme **3 briques empilables** : une solution technique qui tourne 
 ```
 1. Preparer le Mac       brew, Colima, pmset             ~10 min
 2. Configurer le site    .env, docker-compose             ~5 min
-3. Lancer la stack       docker compose up -d             ~5 min
+3. Lancer la stack       docker-compose up -d             ~5 min
 4. Ouvrir le tunnel      cloudflared + DNS Cloudflare    ~10 min
    ─────────────────────────────────────────────────────
    → n8n et NocoDB accessibles en HTTPS depuis n'importe ou
@@ -81,7 +81,7 @@ Spark implique 4 roles. Dans une petite structure, une seule personne peut cumul
 
 | Role | Ce qu'il fait | Ce qu'il touche |
 |------|--------------|-----------------|
-| **Admin / infra** | Installe le Mac, Docker, Colima, le tunnel. Gere le `.env` et les backups. | Terminal, `docker compose`, fichiers de config |
+| **Admin / infra** | Installe le Mac, Docker, Colima, le tunnel. Gere le `.env` et les backups. | Terminal, `docker-compose`, fichiers de config |
 | **Gestionnaire de credentials** | Configure les connexions aux logiciels metier (API keys, OAuth2) dans le coffre-fort n8n. | `<prefix>-n8n.<domain>` > Settings > Credentials |
 | **Builder** | Concoit et construit les POCs avec Claude Code : tables, workflows, pages HTML. | Claude Code + MCP, n8n, NocoDB, repo Git |
 | **Utilisateur final** | Utilise les outils construits : formulaires, dashboards, vues NocoDB. | `<prefix>-app.<domain>` et `<prefix>-db.<domain>` uniquement |
@@ -132,7 +132,7 @@ L'installation se fait en 4 etapes depuis un terminal sur le Mac, puis se verifi
 ```
 Etape 1   Preparer le Mac         outils, acces distant, Docker         ~10 min
 Etape 2   Configurer le site      repos, secrets, fichiers de config    ~10 min
-Etape 3   Lancer la stack         docker compose up                     ~5 min
+Etape 3   Lancer la stack         docker-compose up                     ~5 min
 Etape 4   Ouvrir le tunnel        cloudflared + DNS Cloudflare          ~10 min
           ─────────────────────────────────────────────────────────────
           Premier acces            comptes admin, cles API
@@ -398,6 +398,7 @@ services:
       - nocodb
 
   # --- Serveurs MCP (outillage agent IA) ---
+  # n8n-mcp : https://github.com/czlonkowski/n8n-mcp
 
   n8n-mcp:
     image: ghcr.io/czlonkowski/n8n-mcp:latest
@@ -442,7 +443,7 @@ Points cles :
 
 ```bash
 cd ~/spark/infra
-docker compose up -d
+docker-compose up -d
 ```
 
 Verifier que les services repondent (attendre ~15s) :
@@ -803,7 +804,7 @@ Apres le premier acces (etape 4), creer les tokens dans chaque app :
 Puis relancer la stack pour que le MCP n8n prenne sa cle :
 
 ```bash
-cd ~/spark/infra && docker compose up -d
+cd ~/spark/infra && docker-compose up -d
 ```
 
 Le token NocoDB est lu depuis `.env` par le CLI au runtime (pas besoin de restart).
@@ -883,7 +884,7 @@ Le CLI cible `/api/v3/...` avec le header `xc-token`, lit le token via env, ne l
 
 | Outil | Type | Ce qu'il fait | Ou il vit |
 |-------|------|---------------|-----------|
-| `n8n-mcp` | MCP server | Lire/ecrire workflows, activer, executer | docker-compose (service) + scripts/mcp-n8n.sh |
+| [`n8n-mcp`](https://github.com/czlonkowski/n8n-mcp) | MCP server | Lire/ecrire workflows, activer, executer | docker-compose (service) + scripts/mcp-n8n.sh |
 | `nocodb.sh` (skill `nocodb`) | CLI v3 | Lire/ecrire records, schema, tables via API v3 | ~/.claude/skills/nocodb/scripts/ |
 | `n8n-*` skills (x7) | Reference | Config nodes, patterns workflow, expressions, code JS/Python, validation | ~/.claude/skills/ |
 | `nocodb` skill | Reference | API v3 complete, filtres `where`, CLI bash | ~/.claude/skills/ |
