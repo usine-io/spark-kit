@@ -170,9 +170,8 @@ sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setstealthmode on
 # Connexion a distance (SSH) — piloter le Mac sans ecran
 sudo systemsetup -setremotelogin on
 
-# Gestion a distance (ecran partage / VNC) — observer et controler
-sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
-  -activate -configure -access -on -restart -agent -privs -all
+# Partage d'ecran (VNC) — observer et controler
+sudo launchctl load -w /System/Library/LaunchDaemons/com.apple.screensharing.plist
 ```
 
 ```bash
