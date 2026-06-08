@@ -1007,7 +1007,8 @@ Utilisation type du CLI NocoDB (a partager avec l'agent au demarrage d'une sessi
 ```bash
 set -a; source infra/.env; set +a
 export NOCODB_TOKEN="$NOCODB_API_TOKEN"
-export NOCODB_URL="https://<prefix>-db.<domain>"
+export NOCODB_URL="http://127.0.0.1:${SPARK_HOST_HTTP_PORT:-18080}"
+export NOCODB_HOST_HEADER="${SPARK_PREFIX}-db.${SPARK_DOMAIN}"
 bash ~/.claude/skills/nocodb/scripts/nocodb.sh workspace:list
 # … table:list, field:create, record:list, etc.
 unset NOCODB_TOKEN NOCODB_API_TOKEN
