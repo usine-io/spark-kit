@@ -195,6 +195,9 @@ eval "$(/opt/homebrew/bin/brew shellenv)"
 
 # Paquets essentiels
 brew install colima docker docker-compose cloudflared git gh jq curl tmux mole node
+# Note : avec Colima, la commande disponible est `docker-compose` (tiret, plugin v1).
+# La sous-commande `docker compose` (sans tiret, v2 integree au CLI Docker Desktop)
+# n'est PAS disponible. Tout le guide utilise `docker-compose`.
 
 # Tailscale — VPN mesh pour acces distant securise au Mac
 brew install --cask tailscale
