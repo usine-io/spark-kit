@@ -720,19 +720,18 @@ Le token NocoDB est lu depuis `.env` par le CLI au runtime (pas besoin de restar
 
 Les secrets des systemes metier (API keys, tokens des logiciels de l'entreprise) seront ensuite stockes dans **n8n > Settings > Credentials** — chiffres en base par `N8N_ENCRYPTION_KEY`, jamais en clair dans des fichiers.
 
-### Installer les skills tierces
+### Installer les skills Claude Code
 
-Les skills Spark (embarquees dans `templates/`) sont chargees automatiquement. Mais deux jeux de skills **tierces** doivent etre installes manuellement — ils donnent a l'agent la doc de reference NocoDB/n8n et le CLI `nocodb.sh` (seul canal d'acces stable a NocoDB pour l'agent) :
+Les skills donnent a l'agent la doc de reference et le CLI `nocodb.sh` (seul canal d'acces stable a NocoDB pour l'agent). Elles sont embarquees dans le repo templates :
 
 ```bash
-# NocoDB — reference API v3 + CLI nocodb.sh (canal d'acces live)
-npx @anthropic-ai/claude-code skills add nocodb/agent-skills
-
-# n8n — 7 skills (nodes, workflows, expressions, code, validation)
-npx @anthropic-ai/claude-code skills add n8n/agent-skills
+cd ~/spark/templates/skills
+cp -R nocodb spark-* ~/.claude/skills/
 ```
 
 > Les skills s'installent dans `~/.claude/skills/` et sont disponibles dans toutes les sessions Claude Code. A faire une seule fois par poste.
+
+Les 7 skills n8n (`n8n-workflow-patterns`, `n8n-node-configuration`, etc.) sont fournies automatiquement par le serveur MCP n8n — pas besoin de les installer separement.
 
 ### Smoke test
 
@@ -1001,7 +1000,7 @@ cat > .mcp.json <<'JSON'
 JSON
 ```
 
-Au demarrage d'une session Claude Code dans ce repo, le MCP n8n apparait automatiquement comme tool provider. NocoDB est utilisable via le CLI de la skill (installe a l'etape 3 § "Installer les skills tierces").
+Au demarrage d'une session Claude Code dans ce repo, le MCP n8n apparait automatiquement comme tool provider. NocoDB est utilisable via le CLI de la skill (installe a l'etape 3 § "Installer les skills Claude Code").
 
 Utilisation type du CLI NocoDB (a partager avec l'agent au demarrage d'une session) :
 
