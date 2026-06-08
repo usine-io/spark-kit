@@ -158,10 +158,13 @@ L'aboutissement : ouvrir Claude Code dans `~/spark/` et lancer le smoke test (`t
 # Auto-reboot apres coupure electrique (critique en usine)
 sudo pmset -a autorestart 1
 
-# Pas de mise en veille
+# Pas de mise en veille (permanent)
 sudo pmset -a sleep 0
 sudo pmset -a disksleep 0
 sudo pmset -a displaysleep 0
+
+# Empecher la veille immediatement (le pmset peut necessiter un reboot)
+caffeinate -dims &
 
 # Firewall en mode stealth
 sudo /usr/libexec/ApplicationFirewall/socketfilterfw --setglobalstate on
