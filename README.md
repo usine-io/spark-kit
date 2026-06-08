@@ -720,6 +720,20 @@ Le token NocoDB est lu depuis `.env` par le CLI au runtime (pas besoin de restar
 
 Les secrets des systemes metier (API keys, tokens des logiciels de l'entreprise) seront ensuite stockes dans **n8n > Settings > Credentials** — chiffres en base par `N8N_ENCRYPTION_KEY`, jamais en clair dans des fichiers.
 
+### Installer les skills tierces
+
+Les skills Spark (embarquees dans `templates/`) sont chargees automatiquement. Mais deux jeux de skills **tierces** doivent etre installes manuellement — ils donnent a l'agent la doc de reference NocoDB/n8n et le CLI `nocodb.sh` (seul canal d'acces stable a NocoDB pour l'agent) :
+
+```bash
+# NocoDB — reference API v3 + CLI nocodb.sh (canal d'acces live)
+npx @anthropic-ai/claude-code skills add nocodb/agent-skills
+
+# n8n — 7 skills (nodes, workflows, expressions, code, validation)
+npx @anthropic-ai/claude-code skills add n8n/agent-skills
+```
+
+> Les skills s'installent dans `~/.claude/skills/` et sont disponibles dans toutes les sessions Claude Code. A faire une seule fois par poste.
+
 ### Smoke test
 
 Copier le briefing agent depuis le repo templates, puis ouvrir Claude Code :
@@ -738,9 +752,8 @@ Premier prompt a coller :
 Nouveau site Spark, la plomberie est posee (infra/, tunnel, containers up).
 Avant de builder quoi que ce soit :
 1. Lis templates/GETTING-STARTED.md et templates/CLAUDE.md — c'est ta reference.
-2. Verifie ton outillage : skills installes (npx), MCP n8n connecte, CLI NocoDB fonctionnel.
-3. Installe ce qui manque.
-4. Lance le smoke test dans templates/crash-test/ pour valider la liaison n8n ↔ NocoDB.
+2. Verifie ton outillage : skills installes, MCP n8n connecte, CLI NocoDB fonctionnel.
+3. Lance le smoke test dans templates/crash-test/ pour valider la liaison n8n ↔ NocoDB.
 Rapport a chaque etape.
 ```
 
@@ -988,21 +1001,7 @@ cat > .mcp.json <<'JSON'
 JSON
 ```
 
-Au demarrage d'une session Claude Code dans ce repo, le MCP n8n apparait automatiquement comme tool provider. NocoDB est utilisable via le CLI de la skill (voir plus bas).
-
-### Installer les skills
-
-Les skills donnent a Claude Code la documentation de reference pour configurer n8n et NocoDB sans allers-retours. **La skill NocoDB est essentielle ici** : elle embarque le CLI `nocodb.sh` qui est le canal d'acces a NocoDB pour l'agent (en l'absence de MCP NocoDB stable).
-
-```bash
-# NocoDB — reference API v3 + CLI nocodb.sh (canal d'acces live)
-npx @anthropic-ai/claude-code skills add nocodb/agent-skills
-
-# n8n — 7 skills (nodes, workflows, expressions, code, validation)
-npx @anthropic-ai/claude-code skills add n8n/agent-skills
-```
-
-> Les skills s'installent dans `~/.claude/skills/` et sont disponibles dans toutes les sessions Claude Code. A faire une seule fois par poste.
+Au demarrage d'une session Claude Code dans ce repo, le MCP n8n apparait automatiquement comme tool provider. NocoDB est utilisable via le CLI de la skill (installe a l'etape 3 § "Installer les skills tierces").
 
 Utilisation type du CLI NocoDB (a partager avec l'agent au demarrage d'une session) :
 
