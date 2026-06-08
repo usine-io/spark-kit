@@ -113,6 +113,22 @@ Le CLI cible `/api/v3/...` avec le header `xc-token`, lit le token via env, ne l
 
 ---
 
+## Installer Claude Code
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+
+Puis lancer une premiere fois pour s'authentifier :
+
+```bash
+claude
+```
+
+Claude Code ouvre le navigateur pour le login Anthropic. Une fois connecte, quitter avec `/exit` — l'authentification est persistante, les lancements suivants n'en auront plus besoin.
+
+---
+
 ## Smoke test
 
 Copier le briefing agent depuis le repo templates, puis ouvrir Claude Code :
