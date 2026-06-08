@@ -191,7 +191,7 @@ echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
 eval "$(/opt/homebrew/bin/brew shellenv)"
 
 # Paquets essentiels
-brew install colima docker docker-compose cloudflared git jq curl tmux mole node
+brew install colima docker docker-compose cloudflared git gh jq curl tmux mole node
 
 # Tailscale — VPN mesh pour acces distant securise au Mac
 brew install --cask tailscale
