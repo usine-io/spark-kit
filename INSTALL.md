@@ -582,6 +582,14 @@ Les secrets des systemes metier (API keys, tokens des logiciels de l'entreprise)
 
 ---
 
+**La stack tourne, le tunnel est ouvert, les cles API sont en place. L'infrastructure est terminee.** La suite se passe dans Claude Code : installer les skills, configurer le MCP, et lancer le smoke test qui valide que tout se parle.
+
+**→ [CLAUDE-CODE.md](CLAUDE-CODE.md)**
+
+Les sections ci-dessous (securite, backup, depannage) sont optionnelles — a consulter au besoin, pas maintenant.
+
+---
+
 ## Aller plus loin — durcir et sauvegarder (optionnel)
 
 La stack cœur ci-dessus est un prototype joignable. Deux briques optionnelles, **independantes l'une de l'autre**, la rendent exploitable en production. Chacune est documentee comme un "step" dans `templates/setup-skeleton/` (clone en local dans `~/spark/templates/`).
