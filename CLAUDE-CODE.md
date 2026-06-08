@@ -131,6 +131,8 @@ Claude Code ouvre le navigateur pour le login Anthropic. Une fois connecte, quit
 
 ## Smoke test
 
+Le smoke test est un test de plomberie automatise : il verifie que **n8n et NocoDB se parlent dans les deux sens** a travers la stack qu'on vient d'installer. Concretement, Claude Code va creer deux tables temporaires dans NocoDB, deux workflows dans n8n, envoyer un "ping" et verifier qu'un "echo" revient. Ca valide 3 routes : ecriture (n8n → NocoDB), chainage (n8n → n8n), lecture (n8n → NocoDB). Si les 3 passent, la stack est operationnelle. Le tout prend ~5 minutes et se nettoie ensuite.
+
 Copier le briefing agent depuis le repo templates, puis ouvrir Claude Code :
 
 ```bash
