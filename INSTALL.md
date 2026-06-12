@@ -60,7 +60,7 @@ brew install --cask tailscale
 
 ```bash
 # Demarrer Colima
-colima start --cpu 4 --memory 4 --disk 60 --network-address --vm-type vz
+colima start --cpu 4 --memory 3 --disk 60 --network-address --vm-type vz
 
 # Verifier que Docker repond
 docker info
@@ -88,7 +88,7 @@ cat > ~/Library/LaunchAgents/com.spark.colima.plist <<PLIST
         <string>--cpu</string>
         <string>4</string>
         <string>--memory</string>
-        <string>4</string>
+        <string>3</string>
         <string>--disk</string>
         <string>60</string>
         <string>--network-address</string>
@@ -309,29 +309,6 @@ services:
       - n8n
       - nocodb
 
-  # --- Serveurs MCP (outillage agent IA) ---
-  # n8n-mcp : https://github.com/czlonkowski/n8n-mcp
-
-  n8n-mcp:
-    image: ghcr.io/czlonkowski/n8n-mcp:latest
-    restart: unless-stopped
-    networks: [spark]
-    depends_on: [n8n]
-    environment:
-      MCP_MODE: http
-      N8N_API_URL: http://n8n:5678
-      N8N_API_KEY: ${N8N_API_KEY}
-      AUTH_TOKEN: ${N8N_MCP_AUTH_TOKEN}
-      NODE_ENV: production
-      LOG_LEVEL: error
-      PORT: "3000"
-      N8N_MCP_TELEMETRY_DISABLED: "true"
-      WEBHOOK_SECURITY_MODE: permissive
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-
 volumes:
   postgres_data:
   n8n_data:
@@ -349,7 +326,7 @@ Points cles :
 - Caddy ecoute sur `127.0.0.1:18080` — pas accessible depuis le reseau, uniquement via cloudflared
 - PostgreSQL cree des **utilisateurs separes** (n8n, nocodb) avec des mots de passe distincts
 - NocoDB utilise `NC_DB_JSON` (objet) et non `NC_DB` (URL) — evite les crashloops si le password contient des caracteres speciaux
-- `WEBHOOK_SECURITY_MODE=permissive` sur n8n-mcp — le MCP bloque les IPs privees par defaut (protection SSRF), mais il doit joindre `http://n8n:5678` sur le reseau Docker interne. Le mode `permissive` autorise localhost et IPs privees tout en bloquant les endpoints cloud metadata. Safe car le container n'est expose sur aucun port public.
+- Le MCP n8n n'est **pas** dans le compose — il est lance a la demande par Claude Code via `scripts/mcp-n8n.sh` (voir [CLAUDE-CODE.md](CLAUDE-CODE.md)). Ca economise ~512 Mo de RAM permanente.
 
 ---
 
@@ -639,7 +616,7 @@ docker run --rm alpine free -h
 Si `available` < 200 MB → redimensionner :
 ```bash
 colima stop
-colima start --cpu 4 --memory 6 --disk 60
+colima start --cpu 4 --memory 4 --disk 60
 ```
 
 ### n8n affiche "secure cookie" error

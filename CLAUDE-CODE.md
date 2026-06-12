@@ -23,7 +23,7 @@ Les 7 skills n8n (`n8n-workflow-patterns`, `n8n-node-configuration`, etc.) sont 
 
 ## Configurer le MCP n8n
 
-Le serveur MCP `n8n-mcp` est deja dans le `docker-compose.yml`. Il reste a creer le script de connexion et configurer Claude Code.
+Le MCP n8n est lance **a la demande** par Claude Code (via `docker run`, pas dans le compose — ca economise ~512 Mo de RAM permanente). Il reste a creer le script de connexion et configurer Claude Code.
 
 Pour NocoDB, **pas de MCP** : l'agent passe par le CLI `nocodb.sh` de la skill `nocodb` (API v3, PAT). Raison : aucun package MCP NocoDB n'est aujourd'hui compatible avec les versions recentes de NocoDB (2026.04.5+) — cf. INC-2026-05-19. La doc se tient au canal qui fonctionne maintenant.
 
@@ -100,7 +100,7 @@ Le CLI cible `/api/v3/...` avec le header `xc-token`, lit le token via env, ne l
 
 | Outil | Type | Ce qu'il fait | Ou il vit |
 |-------|------|---------------|-----------|
-| [`n8n-mcp`](https://github.com/czlonkowski/n8n-mcp) | MCP server | Lire/ecrire workflows, activer, executer | docker-compose (service) + scripts/mcp-n8n.sh |
+| [`n8n-mcp`](https://github.com/czlonkowski/n8n-mcp) | MCP server | Lire/ecrire workflows, activer, executer | scripts/mcp-n8n.sh (lance a la demande via `docker run`) |
 | `nocodb.sh` (skill `nocodb`) | CLI v3 | Lire/ecrire records, schema, tables via API v3 | ~/.claude/skills/nocodb/scripts/ |
 | `n8n-*` skills (x7) | Reference | Config nodes, patterns workflow, expressions, code JS/Python, validation | fournies par le MCP n8n |
 | `nocodb` skill | Reference | API v3 complete, filtres `where`, CLI bash | ~/.claude/skills/nocodb/ |
