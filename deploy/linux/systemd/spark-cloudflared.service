@@ -1,0 +1,18 @@
+[Unit]
+Description=Spark Cloudflare Tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=spark
+Group=spark
+ExecStart=/usr/bin/cloudflared tunnel --config /opt/spark/.cloudflared/config-spark.yml run
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/opt/spark/infra/logs/cloudflared.log
+StandardError=append:/opt/spark/infra/logs/cloudflared.err
+
+[Install]
+WantedBy=multi-user.target
