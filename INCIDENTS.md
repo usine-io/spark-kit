@@ -7,6 +7,60 @@
 
 ---
 
+## INC-2026-06-30 — QR code ZPL n'encode qu'une seule lettre (préfixe `^FD` manquant sur `^BQ`)
+
+**Site** : anonymisé (site Spark imprimant des étiquettes QR via une pseudo-API n8n → imprimante ZPL, ici TSC TE310 en émulation ZPL)
+**Sévérité** : medium (étiquettes physiques imprimées mais QR illisible/faux → traçabilité cassée en atelier ; pas de panne stack)
+**Statut** : 🟢 résolu (préfixe ajouté + vérifié par décodage)
+
+### Symptôme
+- Le QR **s'affiche** à taille normale sur l'étiquette, donc on ne soupçonne pas la donnée.
+- Au scan, il ne rend qu'**un seul caractère** au lieu du code attendu. Exemple vécu : data voulue `3NEW` → le QR décode `W`.
+- Le ZPL généré ressemblait à : `…^FO454,12^BQN,2,4^FD3NEW^FS…` (QR `^BQ` + `^FD<data>` brut).
+
+### Diagnostic
+Rendre + **décoder** le ZPL hors imprimante (l'œil ne suffit pas — un renderer tolérant masque le bug) :
+```bash
+# 1. Rendre le ZPL en PNG via Labelary (12dpmm = 300dpi ; adapter au DPI réel)
+ZPL='^XA^PW612^LL156^FO454,12^BQN,2,4^FD3NEW^FS^XZ'
+curl -s --data-binary "$ZPL" \
+  "https://api.labelary.com/v1/printers/12dpmm/labels/2.04x0.52/0/" -o /tmp/q.png
+
+# 2. DÉCODER le QR (le rendu visuel ne révèle pas le contenu)
+curl -s -F "file=@/tmp/q.png" "https://api.qrserver.com/v1/read-qr-code/"
+# ^FD3NEW    -> {"data":"W"}      <-- bug reproduit
+# ^FDMA,3NEW -> {"data":"3NEW"}   <-- corrigé
+```
+⚠️ **Piège dans le piège** : Labelary est *tolérant* et affiche un QR d'apparence normale même pour le ZPL cassé. Seul le **décodage** distingue bon/mauvais. Ne jamais valider un QP/code-barre à l'œil.
+
+### Cause racine
+La syntaxe QR de ZPL (`^BQ`) impose que le champ `^FD` **commence par 2 caractères de contrôle suivis d'une virgule** : `^FD<niveau_correction><mode>,<data>`.
+- `<niveau_correction>` ∈ `L`(~7%) `M`(~15%) `Q`(~25%) `H`(~30%)
+- `<mode>` = `A` (automatique, recommandé) ou `M` (manuel)
+
+Sans ce préfixe, le firmware (TSC TE310 / Zebra) **consomme les premiers caractères de la donnée comme codes de contrôle** et n'encode que le reliquat → d'où « une seule lettre ». Le préfixe **n'est pas encodé** dans le QR : `^FDMA,3NEW` → le symbole contient exactement `3NEW`, pas `MA,3NEW`. (C'est aussi pourquoi un QR « correct » paraît plus dense : il porte enfin toute la donnée + la redondance de correction d'erreur, pas de l'info en plus.)
+
+### Fix immédiat
+Préfixer le `^FD` de **tout** `^BQ` : `^FD<data>` → `^FDMA,<data>` (Medium + Auto, défaut robuste pour une étiquette manipulée).
+```diff
+- zpl += `^FO454,12^BQN,2,4^FD${code}^FS`;
++ zpl += `^FO454,12^BQN,2,4^FDMA,${code}^FS`;
+```
+À répliquer partout où le ZPL est construit : node(s) « Build Response » n8n **et** tout self-test du print-server (les copies divergent vite).
+
+### Fix structurel
+- Helper unique de génération QR (`qrField(data, ecc='M', mode='A')`) plutôt que de la concat `^FD` éparpillée → un seul endroit où le préfixe est garanti.
+- **Definition-of-done d'une étiquette = scan réussi**, pas « ça s'imprime ». Ajouter une étape décode (Labelary + read-qr) au script E2E du module impression.
+- Idem code-barres 1D : `^BC`/`^BE`… ont chacun leurs contraintes de `^FD` (Mod-10/Mod-43, longueur) — un code qui « s'imprime » peut rester invalide au scan.
+
+### Leçons exploitables
+- [ ] `^BQ` (QR) : `^FD` **toujours** préfixé `<ECC><mode>,` (ex. `MA,`) — jamais la donnée brute.
+- [ ] Le préfixe est du contrôle consommé par l'imprimante, **pas** encodé dans le symbole.
+- [ ] Valider un QR/code-barre par **décodage**, jamais à l'œil (les renderers tolérants masquent le bug).
+- [ ] Chercher toutes les constructions ZPL avant de clore : `grep -rn '\^BQ\|\^BC\|\^FD' --include='*.js' --include='*.py' --include='*.json'` (fronts, workflows exportés, print-server).
+
+---
+
 ## INC-2026-05-30 — Briefing agent `CLAUDE.md` dupliqué dans 2 repos → drift silencieux
 
 **Site** : transverse (gouvernance kit, pas un site précis)
