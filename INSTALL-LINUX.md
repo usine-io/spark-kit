@@ -2,7 +2,7 @@
 
 > Ce guide part d'un serveur Debian 12+ (Bookworm) ou Ubuntu 22.04+ vierge et aboutit a une stack Spark operationnelle en HTTPS. Temps total : ~30 minutes.
 >
-> Pour un Mac Mini, voir le [guide macOS](../../INSTALL.md). Apres l'installation, configurer Claude Code avec [CLAUDE-CODE.md](../../CLAUDE-CODE.md).
+> Pour un Mac Mini, voir le [guide macOS](INSTALL.md). Apres l'installation, configurer Claude Code avec [CLAUDE-CODE.md](CLAUDE-CODE.md).
 
 ## Conventions du guide
 
@@ -648,4 +648,4 @@ sudo journalctl -u spark-cloudflared.service --since "5 min ago"
 
 ---
 
-**La stack tourne, le tunnel est ouvert, les cles API sont en place.** Suite : configurer Claude Code → [CLAUDE-CODE.md](../../CLAUDE-CODE.md).
+**La stack tourne, le tunnel est ouvert, les cles API sont en place.** Suite : configurer Claude Code → [CLAUDE-CODE.md](CLAUDE-CODE.md).
