@@ -24,7 +24,7 @@ Toutes les commandes sont a executer en tant que `root` ou via `sudo`, sauf ment
 | CPU | 4 vCPU |
 | RAM | 8 Go |
 | Disque | 60 Go |
-| Reseau sortant | HTTPS (port 443) vers Cloudflare |
+| Reseau sortant | HTTPS (port 443) + port 7844 (TCP+UDP) vers Cloudflare |
 | Reseau entrant | SSH uniquement (aucun autre port) |
 | Acces | Compte avec sudo |
 

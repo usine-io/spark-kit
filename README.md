@@ -48,12 +48,13 @@ Spark se lit comme **3 briques empilables** : une solution technique qui tourne 
 ### Brique 1 — la solution technique · 4 etapes, 30 minutes
 
 ```
-1. Preparer le serveur   Docker, cloudflared, outils      ~10 min
+1. Preparer le serveur   Docker, cloudflared, Node.js      ~10 min
 2. Configurer le site    .env, docker-compose               ~5 min
 3. Lancer la stack       docker compose up -d               ~5 min
 4. Ouvrir le tunnel      cloudflared + DNS Cloudflare      ~10 min
+5. Installer Claude Code npm install + CLAUDE.md            ~5 min
    ─────────────────────────────────────────────────────
-   → n8n et NocoDB accessibles en HTTPS depuis n'importe ou
+   → n8n, NocoDB et Claude Code operationnels en HTTPS
 ```
 
 ### Briques 2 & 3 — pour passer en production (optionnelles)
@@ -87,8 +88,9 @@ Choisir le guide selon le serveur de prototypage :
 | **PostgreSQL 16** | Base relationnelle (n8n + NocoDB, users separes) | Un seul backup couvre tout |
 | **Caddy** | Reverse proxy + serveur de fichiers | Route le trafic, sert les apps metier statiques |
 | **Cloudflare Tunnel** | Acces HTTPS distant | TLS gere par Cloudflare, zero cert a gerer, zero port ouvert |
+| **Claude Code** | Moteur de developpement | Construit les workflows, schemas, pages et scripts directement sur le serveur |
 
-Tout tourne dans Docker — via **Colima** sur macOS, nativement sur Linux.
+Tout tourne dans Docker — via **Colima** sur macOS, nativement sur Linux. Claude Code s'installe sur la machine Spark elle-meme (pas sur un poste distant) et travaille directement dans le dossier Spark.
 
 **Securite des secrets** : les identifiants des systemes connectes (API keys, tokens, mots de passe) sont stockes dans le coffre-fort de credentials natif de n8n, chiffres par `N8N_ENCRYPTION_KEY`. Pas de fichier `.env` sauvage avec des secrets metier — le `.env` ne contient que les secrets d'infrastructure de la stack elle-meme.
 
@@ -121,7 +123,7 @@ Le guide complet des roles (matrice d'acces, documentation par profil) est dans 
 | **CPU** | Apple Silicon (M1+) | 4 vCPU |
 | **RAM** | 8 Go (16 Go recommande) | 4 Go (8 Go recommande) |
 | **Stockage** | 50 Go libres | 50 Go |
-| **Reseau** | Ethernet LAN | SSH + HTTPS sortant (port 443) |
+| **Reseau** | Ethernet LAN | SSH + HTTPS sortant (port 443) + port 7844 sortant (TCP+UDP) vers Cloudflare |
 
 ### Cloudflare (obligatoire)
 
@@ -179,7 +181,7 @@ Le tunnel Cloudflare est le seul moyen d'obtenir du HTTPS propre sans infrastruc
 - Cloudflare gere le TLS et les certificats — zero config cote serveur
 - Utilisateurs PostgreSQL separes (n8n, nocodb) avec mots de passe distincts
 - `restart: unless-stopped` → les conteneurs redemarrent apres un reboot (LaunchAgent sur macOS, systemd sur Linux)
-- Images Docker epinglees (pas de `latest` sauf NocoDB)
+- Images Docker epinglees par version + digest sha256 (pas de `latest`)
 - Secrets metier dans le coffre n8n Credentials, pas dans des fichiers `.env`
 
 ---
