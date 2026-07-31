@@ -14,6 +14,8 @@
 
 Toutes les commandes sont a executer en tant que `root` ou via `sudo`, sauf mention contraire.
 
+**Changements d'utilisateur** — `sudo -iu spark` et `exit` sont toujours la **derniere ligne de leur bloc**, jamais suivis d'autres commandes. Ces deux commandes changent de shell : ce qui suit dans le meme bloc est avale par le stdin du shell qu'on quitte ou qu'on ouvre, au lieu d'etre tape dedans — une commande plein ecran comme `nano` ne s'affiche alors pas. Coller un bloc a la fois, et attendre le nouveau prompt avant le suivant.
+
 ---
 
 ## Etape 0 — Prerequis
@@ -377,6 +379,11 @@ Revenir en root/sudo pour installer le service :
 
 ```bash
 exit   # quitter le shell spark
+```
+
+Puis, de retour dans le shell administrateur :
+
+```bash
 sudo cp /opt/spark/templates/deploy/linux/systemd/spark-compose.service \
   /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -407,6 +414,11 @@ Executer en tant que `spark` :
 
 ```bash
 sudo -iu spark
+```
+
+Puis, une fois dans le shell `spark` :
+
+```bash
 cloudflared login
 ```
 
@@ -462,6 +474,11 @@ Si tout repond, couper avec `Ctrl-C` et installer le service systemd :
 
 ```bash
 exit   # quitter le shell spark
+```
+
+Puis, de retour dans le shell administrateur :
+
+```bash
 sudo cp /opt/spark/templates/deploy/linux/systemd/spark-cloudflared.service \
   /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -478,6 +495,11 @@ sudo systemctl status spark-cloudflared.service
 
 ```bash
 sudo -iu spark
+```
+
+Puis, une fois dans le shell `spark` :
+
+```bash
 nano ~/infra/.env
 ```
 
@@ -576,6 +598,7 @@ Relancer :
 
 ```bash
 cd ~/infra && docker compose up -d
+exit   # quitter le shell spark
 ```
 
 ---
