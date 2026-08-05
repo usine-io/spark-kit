@@ -7,6 +7,55 @@
 
 ---
 
+## INC-2026-08-05 — Patch d'un workflow n8n actif par l'API : endpoint HS 2 min, puis patch fantôme
+
+**Site** : anonymisé (`acme` / `acme.example`) — pseudo-API n8n → NocoDB, canal REST v1 (pas de MCP)
+**Sévérité** : medium (un endpoint de liste consommé par 3 écrans atelier répond « Error in workflow » pendant ~2 min, en pleine journée de production ; aucune donnée corrompue)
+**Statut** : ✅ résolu (restauration par PUT du backup, puis re-patch corrigé)
+
+### Symptôme
+Deux pièges enchaînés dans le même patch, avec des symptômes opposés :
+1. **L'endpoint tombe** — `POST /webhook/api/wms/pieces` → `{"message":"Error in workflow"}` (HTTP 500) juste après un PUT qui « avait marché » (200, workflow relu, nodes bien présents).
+2. **Puis le patch semble sans effet** — après correction et nouveau PUT, l'exécution n'enchaîne toujours que les **anciens** nodes. Le `GET /api/v1/workflows/{id}` montre pourtant les 8 nodes et les bonnes connexions.
+
+### Diagnostic
+L'outil n°1 reste l'exécution, pas le workflow :
+```bash
+# 1. Quel node a échoué, et avec quel message
+curl -s -H "Host: acme-n8n.acme.example" -H "X-N8N-API-KEY: $KEY" \
+  "http://127.0.0.1:18080/api/v1/executions?limit=1&workflowId=$WF&includeData=true" \
+  | python3 -c "import json,sys; e=json.load(sys.stdin)['data'][0]; \
+      rd=e['data']['resultData']; print(rd.get('lastNodeExecuted'), rd.get('error',{}).get('message'))"
+# → Fetch Sans Type  Credentials not found        <-- piège 1
+
+# 2. Quels nodes ont RÉELLEMENT tourné (vs ceux que le GET montre)
+#    → runData ne contient que Webhook, Fetch, Format, Respond : les 4 nouveaux n'ont jamais couru
+```
+
+### Cause racine
+Deux propriétés de l'API n8n, aucune des deux visible à la relecture du workflow :
+- **`nodeCredentialType` seul ne suffit pas.** Un node HTTP créé à la main avec
+  `authentication: predefinedCredentialType` + `nodeCredentialType: '<type>'` n'a **aucune credential attachée** : l'objet `credentials` est un champ **à part** (`{'<type>': {'id': …, 'name': …}}`), absent par défaut. Le node paraît correct partout sauf à l'exécution.
+- **Un PUT qui change le GRAPHE n'est pas rechargé par l'instance active.** Un PUT de *paramètres* est actif immédiatement (c'est la règle connue) ; dès qu'on **ajoute des nodes ou des connexions**, l'instance active continue de servir l'ancien graphe. On patche, on teste, rien ne change — et on cherche le bug dans son propre code.
+
+### Fix immédiat
+Restauration par PUT du backup pris avant le patch (le workflow était sauvegardé en fichier au préalable) : endpoint nominal en une commande, ~2 min d'indisponibilité au total.
+
+### Fix structurel
+- Recopier l'objet `credentials` d'un node voisin qui fonctionne, dans le script de patch.
+- **`POST /deactivate` puis `POST /activate`** systématiquement après un changement de graphe — dans le script, pas dans la tête.
+- Script de patch en deux temps : **`--dry-run` par défaut**, `--execute` explicite ; et **assertions sur l'état de départ** (nom du workflow, présence des nodes attendus, code exact des Code nodes modifiés, connexions attendues) → un patch qui échoue bruyamment sur un état inattendu vaut mieux qu'un patch qui « réussit » sur un workflow qui a bougé.
+
+### Leçons exploitables (à porter dans Spark)
+- [x] `spark-n8n-pseudo-api` : W25 (PUT de graphe ≠ actif) + W26 (`credentials` obligatoire) + le garde-fou backup/assertions/dry-run.
+- [ ] Bootstrap : fournir un squelette `patch-<workflow>.py` (GET → assertions → modif → dry-run/execute → deactivate/activate) plutôt que de laisser chaque site le réinventer.
+- [ ] Vérifier qu'un patch a bien pris **par une exécution**, jamais par la relecture du workflow.
+
+### Temps réel
+Détection immédiate (test de l'endpoint juste après le patch) → restauration < 2 min → cause racine du piège n°2 comprise ~20 min plus tard.
+
+---
+
 ## INC-2026-06-30 — QR code ZPL n'encode qu'une seule lettre (préfixe `^FD` manquant sur `^BQ`)
 
 **Site** : anonymisé (site Spark imprimant des étiquettes QR via une pseudo-API n8n → imprimante ZPL, ici TSC TE310 en émulation ZPL)
