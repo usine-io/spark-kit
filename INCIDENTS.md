@@ -7,6 +7,76 @@
 
 ---
 
+## INC-2026-08-06 — Les étiquettes sortent en ZPL brut : le démarrage automatique avait perdu la configuration
+
+**Site** : anonymisé (`acme` / `acme.example`) — pseudo-API n8n → serveur d'impression local → étiqueteuse ZPL (TSC en USB)
+**Sévérité** : high (impression d'étiquettes à l'arrêt en pleine production ; l'atelier ne peut plus identifier les appareils)
+**Statut** : ✅ résolu (cause racine corrigée, plus 4 défauts adjacents découverts en chemin)
+
+### Symptôme
+Un matin, l'atelier : *« on n'arrive plus à imprimer, les étiquettes sortent en ZPL »* — du **code en clair sur du papier** au lieu d'une étiquette. Un poste touché ; les autres normaux. Question posée à l'agent : *« est-ce qu'on a touché à ce workflow hier ? »*
+
+### Diagnostic
+**D'abord établir que le logiciel est hors de cause** — trois regards, dix minutes :
+```bash
+# 1. Les fichiers d'impression ont-ils bougé ? (18 fichiers modifiés la veille, aucun ici)
+git log --since=<hier> --name-only --format='' | sort -u | grep -iE "print|zpl|label"
+git log -1 --format='%h %ad %s' -- infra/print-server/     # → 9 jours plus tôt
+
+# 2. Le workflow qui génère l'étiquette a-t-il bougé ? (updatedAt via l'API n8n)
+curl -s -H "X-N8N-API-KEY: $KEY" "$N8N/api/v1/workflows?limit=250" | jq -r \
+  '.data[] | select(.name|test("label|print")) | "\(.updatedAt) \(.name)"'   # → 2 semaines
+
+# 3. Le ZPL produit MAINTENANT est-il correct ? (le contrôle qui tranche)
+curl -s "$APP/webhook/api/wms/dossier/label?dossier_id=25" | jq -r .zpl | head -c 80
+# ^XA^PW612^LL156^FO24,12^A0N,33,30^FD…  → bien formé, ^XA…^XZ, pas de BOM
+```
+Les trois sont propres → **la cause est en aval du logiciel**. Le détail décisif est venu de l'utilisateur : *« le poste a eu l'installation de `install-autostart.bat` hier, avant le redémarrage d'aujourd'hui »*. Et plus tard, une seconde précision qui a déplacé la faute : *« les imprimantes sont toujours en USB »*.
+
+### Cause racine
+**Le raccourci de démarrage automatique lançait le serveur sans son argument `--printer`**, alors que l'opérateur, lui, le lançait à la main **avec**. Le serveur est donc parti en auto-détection pour la première fois.
+
+Et l'auto-détection **sondait le réseau AVANT de regarder l'imprimante locale** :
+```python
+def detect_printer():
+    for ip in ["192.168.1.50", "192.168.1.100", "192.168.0.50"]:   # réseau d'abord…
+        if connect(ip, 9100): return {"mode": "tcp", "host": ip}
+    return chercher_imprimante_windows()                            # …USB ensuite
+```
+Sur un parc **100 % USB**, cette sonde ne peut jamais trouver la bonne imprimante : au mieux rien, au pire celle d'un tiers. Presque toutes les imprimantes réseau écoutent le port 9100 — une multifonction bureau a reçu le ZPL et l'a imprimé en texte.
+
+**Quatre défauts adjacents, chacun bénin seul, découverts en corrigeant :**
+1. `pythonw` (sans console) **masquait** la ligne qui annonçait pourtant la mauvaise cible ;
+2. en mode `tcp` il n'y a pas de nom d'imprimante → pas de dpi déduit → **le rescaling 300→203 restait inactif** : même en tapant la bonne étiqueteuse, le format aurait été faux. Seconde panne qui attendait son tour ;
+3. la page d'installation servait des **copies** des fichiers, restées à la version fautive : un poste qui réinstallait **réinstallait la panne** ;
+4. le tutoriel lui-même présentait l'auto-détection comme la voie normale et disait « double-cliquer sur le .bat » — donc **sans argument**. La documentation enseignait le scénario de la panne.
+
+### Fix immédiat
+Tuer le processus, relancer à la main avec la cible explicite (`--printer "<nom de la file Windows>"`). Impression rétablie en une commande.
+
+### Fix structurel
+- **Ordre de recherche inversé** : imprimante locale (USB) d'abord, réseau seulement si aucune locale **et** si l'appareil distant s'identifie comme parlant ZPL (`~HI`, Host Identification). Avec cet ordre, l'incident n'aurait pas eu lieu même sans `--printer`.
+- **`~HI` comme garde** : « ça écoute sur 9100 » ≠ « c'est une étiqueteuse ». Bonus : la réponse porte le modèle, donc le dpi — ce qui corrige aussi le défaut n°2.
+- **Le `.bat` exige la cible** (argument ou saisie, avec la liste des imprimantes détectées), **refuse de s'installer sans elle**, et **vérifie après coup** en interrogeant `/status` : un raccourci qui existe ne prouve pas qu'il imprime au bon endroit.
+- **Journal fichier** à côté du script, puisque le lancement sans console mange stdout.
+- **Copies resynchronisées** + un README qui dit qu'elles sont des copies et où est la source.
+- **Page « Diagnostic impression »** dans le front : le serveur n'écoutant que sur le `localhost` du poste, personne à distance ne peut l'observer — mais le navigateur de ce poste, si. La page teste la chaîne et produit un rapport copiable à envoyer. Un opérateur non technique ouvre un lien et colle le résultat.
+
+### Leçons exploitables (à porter dans Spark)
+- [x] `spark-stack-ops` : C7 — vérifier un endpoint sur son **corps**, pas sur son code HTTP.
+- [ ] **Un outil qui automatise un lancement doit transporter TOUTE la configuration du lancement manuel qu'il remplace** — sinon il n'automatise pas, il remplace une commande juste par une commande différente. Et il doit le **prouver** (vérification post-installation), pas le promettre.
+- [ ] **Chercher le local avant le distant.** Un service qui tourne sur la machine de l'utilisateur doit regarder cette machine en premier. L'ordre d'une auto-détection est une décision de conception, pas un détail d'implémentation.
+- [ ] **Une auto-détection doit identifier ce qu'elle a trouvé**, pas se contenter d'un port ouvert. Demander « qui es-tu ? » quand le protocole le permet.
+- [ ] **Un service lancé sans console doit écrire un journal fichier** — sinon le seul message qui explique la panne est produit et perdu.
+- [ ] **Fichiers dupliqués = drift silencieux** (même classe qu'INC-2026-05-30) : toute copie servie au téléchargement doit porter un README qui désigne la source, et être resynchronisée dans le même commit que la source.
+- [ ] **Relire la doc après un incident** : ici elle enseignait littéralement le geste fautif.
+- [ ] Fournir au bootstrap une **page de diagnostic** par service local (imprimante, douchette) : elle transforme un dépannage à distance impossible en un lien à ouvrir.
+
+### Temps réel
+Signalement ~1 h après l'ouverture de l'atelier → logiciel mis hors de cause en ~10 min → cause racine identifiée dès que l'utilisateur a mentionné l'installation de la veille → correctifs et page de diagnostic livrés dans la foulée.
+
+---
+
 ## INC-2026-08-05 — Patch d'un workflow n8n actif par l'API : endpoint HS 2 min, puis patch fantôme
 
 **Site** : anonymisé (`acme` / `acme.example`) — pseudo-API n8n → NocoDB, canal REST v1 (pas de MCP)
