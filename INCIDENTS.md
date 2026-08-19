@@ -7,6 +7,53 @@
 
 ---
 
+## INC-2026-08-19 — 5 OOM Postgres en une journée : la falaise des Lookups se franchit en jours, et n8n ne rétablit jamais son pool
+
+**Site** : anonymisé (`acme` / `acme.example`) — stack NocoDB + n8n + Postgres, VM ~3,4 GiB
+**Sévérité** : high (atelier à l'arrêt ~45 min le matin ; 4 crashs Postgres 08h04→09h04, un 5e le soir)
+**Statut** : ✅ résolu (cause racine + 3 denorms + watchdog + le filtre date de l'export refondu)
+
+### Symptôme
+Un matin, l'atelier : *« le serveur est tombé »*. Le front rend `{"code":503,"message":"Database is not ready!"}`. Redémarrages en boucle : Postgres est tué **signal 9 (OOM)** plusieurs fois en une heure, à chaque fois pendant l'ouverture d'un écran d'export.
+
+### Diagnostic
+```bash
+# Qui tue Postgres ? → les requêtes actives au moment du kill (logs Postgres)
+docker logs acme-postgres-1 --tail 200        # "server process was terminated by signal 9"
+# Quelle requête n8n ? → l'exécution en cours au crash, node par node
+curl -H "X-N8N-API-KEY: $KEY" "$N8N/api/v1/executions/<id>?includeData=true"
+# n8n vivant mais inutilisable ? → readiness, PAS healthz
+curl $N8N/healthz            # 200 — MENT (process vivant, pool DB mort)
+curl $N8N/healthz/readiness  # 503 — dit vrai
+```
+Deux requêtes tueuses, même classe : un **Lookup dans un fetch liste** (N29/N33) sur des tables qui venaient de franchir ~600 rows. Le détail qui piège l'attribution : le 503 « Database is not ready! » sur le vhost du **front** vient de **n8n** (Caddy route tout le non-statique vers lui) — ne pas accuser NocoDB sur la foi du nom de domaine.
+
+### Cause racine
+1. **La falaise N33 se franchit en JOURS** : deux tables ont pris +80 et +194 rows en une seule journée d'atelier et sont passées au-dessus de ~600 — les fetchs « qui marchaient » sont devenus superlinéaires le matin même. Zéro marge mémoire sur la VM → OOM.
+2. **Après un crash-recovery Postgres, NocoDB se reconnecte seul ; n8n JAMAIS** (« Database connection timed out » en boucle, 30 min après un Postgres redevenu sain). Son `/healthz` répond 200 pendant ce temps.
+3. Cerise : le **5e crash** du jour a été causé par la requête de *contrôle* de l'agent (Lookup non borné, pageSize 1000, « juste pour vérifier ») — les règles N29/N33 s'appliquent aussi aux lectures de vérification.
+
+### Fix immédiat
+`docker compose restart n8n` ciblé (25 s) après chaque recovery ; les 2 endpoints tueurs bloqués en maintenance propre (le 1er Code node renvoie `{success:false, error:…}` en 200, connexion sortante coupée — le front affiche le message).
+
+### Fix structurel
+- **Dénormaliser les FK lues en liste en colonnes scalaires** : patcher le **writer avant le backfill**, backfiller, migrer les lecteurs. Bench : Lookup 17,25 s → scalaire 0,20 s (×86). Les exports passent de crash/12,5 s à 4-8 s.
+- ⚠️ **Un backfill de masse bumpe l'`UpdatedAt` de TOUS les rows** : tout filtre « modifié aujourd'hui » ment le jour même (l'export du jour annonçait 334 « entrées en stock »). Lister les consommateurs d'UpdatedAt AVANT le backfill — et à terme, asseoir « entré en stock » sur la table d'**événements** (borne `exactDate` ±1 j), pas sur UpdatedAt : la refonte a aussi réparé l'historique (l'approximation sur-comptait ~40 % certains jours).
+- **Watchdog launchd** sur `/healthz/readiness` (60 s, 2 strikes → restart, throttle 10 min) — en strikant **uniquement sur 502/503** : le premier tir réel a été un faux positif, un gros Code node bloquait l'event loop → timeout (code 000) = **occupé, pas mort**.
+- Auditer TOUTES les tuiles/endpoints (46 ici) avec un auditeur qui **parse les expressions d'URL** — une regex naïve tronquait aux quotes et rendait ~50 % de faux positifs.
+
+### Leçons exploitables (à porter dans Spark)
+- [x] `spark-nocodb-v3-patterns` : nuance N33 (falaise en jours, denorm scalaire, UpdatedAt), N40 (`exactDate`), nuance N37 (isblank 42804) — PR templates #6.
+- [x] `spark-n8n-pseudo-api` : W27 (un item par page), W28 (troncature silencieuse des fetchs non paginés), assertions post-PUT sur le champ précis — PR templates #6.
+- [ ] **Tout monitoring n8n doit viser `/healthz/readiness`**, jamais `/healthz` — et un timeout n'est pas un 503.
+- [ ] **Après un incident Postgres, redémarrer n8n d'office** : il ne rétablit pas son pool seul.
+- [ ] Au bootstrap d'un site : prévoir le watchdog readiness dès le jour 1 sur les VM serrées en RAM.
+
+### Temps réel
+Signalement à l'ouverture → service rétabli en ~45 min → cause racine et mitigations le matin → denorms + watchdog au créneau 16h → refonte du filtre date + audit 46 tuiles à 0 rouge le soir. Une journée, incident clos durci.
+
+---
+
 ## INC-2026-08-06 — Les étiquettes sortent en ZPL brut : le démarrage automatique avait perdu la configuration
 
 **Site** : anonymisé (`acme` / `acme.example`) — pseudo-API n8n → serveur d'impression local → étiqueteuse ZPL (TSC en USB)
