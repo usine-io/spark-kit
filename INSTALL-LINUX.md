@@ -30,6 +30,11 @@ Toutes les commandes sont a executer en tant que `root` ou via `sudo`, sauf ment
 | Reseau entrant | SSH uniquement (aucun autre port) |
 | Acces | Compte avec sudo |
 
+> ⚠️ **Ne pas provisionner SOUS ces minima, meme pour une preprod.** Vecu Kyklos
+> (2026-08) : serveur livre a 2 vCPU / 3,8 Go — la stack tourne, mais sans marge :
+> les incidents OOM d'aout (n8n, NocoDB, Postgres) sont arrives sur une machine
+> mieux dotee. Verifier des la reception : `nproc`, `free -h`, `df -h /`.
+
 Verifier la version :
 
 ```bash
@@ -112,8 +117,12 @@ cloudflared --version
 ### 1.4 — Installer les outils
 
 ```bash
-sudo apt-get install -y jq curl git tmux lsb-release
+sudo apt-get install -y jq curl git tmux lsb-release python3
 ```
+
+> `python3` est present par defaut sur Debian mais explicite ici : les jobs planifies
+> Spark (controles quotidiens, notifications) en dependent — stdlib uniquement,
+> aucun pip requis.
 
 ### 1.5 — Configurer le pare-feu
 
@@ -272,6 +281,7 @@ services:
   n8n:
     image: n8nio/n8n:2.19.4
     restart: unless-stopped
+    mem_limit: 1g
     networks: [spark]
     depends_on:
       postgres: { condition: service_healthy }
@@ -298,8 +308,9 @@ services:
       - n8n_data:/home/node/.n8n
 
   nocodb:
-    image: nocodb/nocodb:latest
+    image: nocodb/nocodb:2026.04.5   # EPINGLER une version precise, jamais :latest (voir Points cles)
     restart: unless-stopped
+    mem_limit: 900m
     networks: [spark]
     depends_on:
       postgres: { condition: service_healthy }
@@ -345,6 +356,14 @@ Points cles :
 - Caddy ecoute sur `127.0.0.1:18080` — pas accessible depuis le reseau, uniquement via cloudflared
 - PostgreSQL cree des **utilisateurs separes** (n8n, nocodb) avec des mots de passe distincts
 - NocoDB utilise `NC_DB_JSON` (objet) et non `NC_DB` (URL) — evite les crashloops si le password contient des caracteres speciaux
+- **Toutes les images sont epinglees** (jamais `:latest`) : un `pull` surprise = migration
+  de schema sans retour arriere, et une **restauration de backup exige la meme version
+  que la source** (vecu Kyklos 2026-08 : serveur en `:latest` 2026.07.0 face a une prod
+  epinglee 2026.04.5 — a realigner avant tout transfert de donnees). Mettre la version
+  que VOUS exploitez, et ne la monter que volontairement
+- **`mem_limit` sur n8n et NocoDB** : sans plafond, une rafale d'imports peut pousser un
+  service a evincer les autres (incidents OOM Kyklos, aout 2026). Ajuster a la RAM du
+  serveur, mais toujours en poser un
 
 ---
 
@@ -490,6 +509,21 @@ Verifier :
 ```bash
 sudo systemctl status spark-cloudflared.service
 ```
+
+> ⚠️ **Un seul service cloudflared.** Le paquet apt (ou un `cloudflared service
+> install` lance par ailleurs) peut avoir cree/active son propre `cloudflared.service`
+> (config dans `/etc/cloudflared/`). Deux services = deux connecteurs sur des configs
+> potentiellement differentes. Verifier et ne garder qu'UN service actif :
+>
+> ```bash
+> systemctl list-unit-files | grep cloudflared
+> # si cloudflared.service (paquet) est deja celui qui tourne avec la bonne config,
+> # le garder et NE PAS activer spark-cloudflared ; sinon :
+> sudo systemctl disable --now cloudflared.service
+> ```
+>
+> (Vecu Kyklos 2026-07 : l'installation a fini sur le `cloudflared.service` du paquet —
+> fonctionnel, mais a documenter pour ne pas activer le doublon ensuite.)
 
 ### 4.6 — Mettre a jour le .env
 
@@ -672,3 +706,7 @@ sudo journalctl -u spark-cloudflared.service --since "5 min ago"
 ---
 
 **La stack tourne, le tunnel est ouvert, les cles API sont en place.** Suite : configurer Claude Code → [CLAUDE-CODE.md](CLAUDE-CODE.md).
+
+Les **jobs planifies** du site (sauvegardes, drill de restauration, controles metier)
+s'installent ensuite depuis le repo client — voir son `infra/deploy/systemd/README.md`
+(exemple : repo `kyklos`, 11 units traduites des launchd du Mac mini).
