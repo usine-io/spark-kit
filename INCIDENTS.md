@@ -7,6 +7,46 @@
 
 ---
 
+## INC-2026-09-06 — Servir la prod depuis Docker-sur-macOS (Colima) s'effondre sous charge : c'est la virtualisation, pas le dimensionnement — et l'outil natif Apple n'y change rien
+
+**Site** : anonymisé — stack Caddy + n8n + NocoDB + Postgres servie en « prod » depuis un **Mac mini** (Docker via **Colima**) pendant la préparation d'une bascule vers un serveur **Linux dédié**.
+**Sévérité** : medium (aucune panne subie ; découvert par un **benchmark de rupture** avant bascule — décision-relevant pour toute migration de plateforme)
+**Statut** : ✅ tranché — la prod doit vivre sur **Linux natif** ; le Mac reste un bac à sable de dev
+
+### Symptôme
+Benchmark de charge (k6, modèle *arrival-rate* ouvert, tapé contre le **Caddy local** pour isoler la stack du réseau/WAF) : à charge **légère** (~2-5 req/s), le Mac (Colima) rend **8,5 s** de latence médiane vs **219 ms** sur un serveur Linux **2 vCPU** — soit **×40**. Sous rampe, le Mac **échoue dur** (95-100 % de 502/503, pool n8n effondré) ; le Linux **dégrade en douceur** (72 % réussissent, readiness 200) **et se rétablit seul**. Contre-intuitif : le petit serveur bat le gros — le Mac a *plus* de vCPU.
+
+### Diagnostic
+```bash
+# Latence réelle sous concurrence, en contournant la couche conteneur (curls HÔTE parallèles) :
+for i in $(seq 1 10); do (curl -s -o /dev/null -w '%{time_total}\n' -H "Host: <app>" \
+  http://127.0.0.1:18080/<endpoint>) & done; wait
+# Sampler pendant le run : CPU PAR conteneur (docker stats) + readiness + OOM (docker inspect .State.OOMKilled)
+# ⚠ Piège : k6 EN CONTENEUR --network host sous Colima ajoute une latence ARTEFACT → utiliser k6 NATIF sur macOS.
+```
+Sous charge, la stack *thrashe* (nocodb CPU >100 %) **mais sans OOM ni saturation RAM** (swap 0) : ce n'est pas la mémoire, c'est le CPU + l'**I/O** + le **réseau** *virtualisés*.
+
+### Cause racine
+Un conteneur n'est pas une VM : des processus isolés (namespaces/cgroups) sur le **noyau de l'hôte**. Sur Linux, ils tournent **directement** sur le noyau. macOS n'est pas Linux → Colima interpose une **VM Linux** (Virtualization.framework). Chaîne : `conteneur → Docker → noyau Linux (VM Colima) → Virtualization.framework → macOS → matériel`. Sur une charge **DB-lourde et concurrente**, le surcoût par-opération (I/O disque virtualisé, réseau virtuel à **chaque** saut inter-conteneur, ordonnancement sous concurrence, VM partagée avec l'hôte) se **multiplie** — invisible à vide, catastrophique en charge.
+
+### Fix immédiat
+Servir la prod sur un **serveur Linux natif** (Docker directement sur le noyau Linux). Même à moins de vCPU, il bat largement le Mac virtualisé.
+
+### Fix structurel
+- Le Mac (Docker Desktop / Colima) est un **outil de dev**, jamais un serveur de prod pour une stack multi-conteneurs sous charge.
+- **L'outil natif macOS `container` d'Apple (WWDC 2025) ne règle PAS le problème** : une VM légère **par** conteneur (démarrage sub-seconde, IP dédiée, EXT4), mais (a) **macOS 15** = communication conteneur-à-conteneur **impossible** (vmnet isole chaque VM) → une stack multi-conteneurs ne fonctionne même pas ; (b) macOS 26 la débloque, mais chaque saut inter-service **traverse une frontière VM** ; (c) ça reste **une VM Linux sur macOS** (I/O/réseau virtualisés). Docker Desktop = même limite de fond.
+
+### Leçons exploitables (à porter dans Spark)
+- [ ] **Prod = Linux natif.** Aucun runtime conteneur macOS (Colima, Docker Desktop, Apple `container`) n'enlève la frontière de virtualisation. Le Mac = **sandbox de dev** (une machine = un client = bac à sable rapide).
+- [ ] **Benchmarker AVANT une bascule de plateforme** : k6 *arrival-rate* ouvert (le modèle fermé à VUs masque la falaise) contre le Caddy local (isole du WAF), **pondéré sur le mix réel** (access logs Caddy), + sampler (CPU par conteneur, swap, readiness, OOM).
+- [ ] **k6 NATIF sur macOS** — le conteneur `--network host` sous Colima fausse la mesure.
+- [ ] Sous charge, distinguer **CPU-bound** (ici : nocodb 1 cœur, pas d'OOM) de **RAM-bound** : la reco de sizing en dépend (ici → prioriser le **vCPU**, pas la RAM).
+
+### Temps réel
+~2 h : harnais (k6 + sampler + seeding d'IDs réels) + runs des 2 machines + analyse. Le test « jusqu'à la casse » a **reproduit en vrai** l'effondrement du pool n8n (cf. INC-2026-08-19) et confirmé que le watchdog seul n'en sort pas sur le Mac.
+
+---
+
 ## INC-2026-08-19 — 5 OOM Postgres en une journée : la falaise des Lookups se franchit en jours, et n8n ne rétablit jamais son pool
 
 **Site** : anonymisé (`acme` / `acme.example`) — stack NocoDB + n8n + Postgres, VM ~3,4 GiB
