@@ -40,7 +40,7 @@ Couverture minimum :
 | `acme-db.acme.example` | email/group humain + Service Token pour CLI/MCP |
 | `acme-app.acme.example` | email/group humain (les browsers auth recoivent un cookie CF — les XHR vers `/webhook/api/*` passent automatiquement) |
 
-**Pattern recommande** : OAuth Microsoft Entra ID (M365) si l'entreprise utilise Microsoft, sinon Google OAuth, sinon email-OTP. Cf. PRD type "Auth via Cloudflare Access" — exemple chez kyklos : PRD-011.
+**Pattern recommande** : OAuth Microsoft Entra ID (M365) si l'entreprise utilise Microsoft, sinon Google OAuth, sinon email-OTP. Cf. PRD type "Auth via Cloudflare Access" — exemple chez une PME : PRD-011.
 
 **Pour les webhooks consommes par des services externes** (pas par browsers humains) : utiliser un **Service Token** CF, transmis par le service en `CF-Access-Client-Id` + `CF-Access-Client-Secret`. Rotation tous les 90 jours.
 
@@ -223,5 +223,5 @@ Liste de findings reutilisables pour l'audit. Severite indicative — a affiner 
 - Recettes Caddy (par site) : `infra/docs/caddy.md`
 - Incident NocoDB Forbidden (PAT v3) : `INCIDENTS.md` INC-2026-05-19
 - Incident NocoDB crashloop (secret URL-decode) : `INCIDENTS.md` INC-2026-05-05
-- PRD type "Auth Entra ID/M365 via CF Access" : voir le repo d'un site deploye (ex. kyklos PRD-011)
+- PRD type "Auth Entra ID/M365 via CF Access" : voir le repo d'un site deploye (ex. PRD-011 d'une PME)
 - Runbook mise en place CF Access (dashboard + Terraform + Service Tokens) : `spark-templates/docs/cf-access.md`

@@ -30,7 +30,7 @@ Toutes les commandes sont a executer en tant que `root` ou via `sudo`, sauf ment
 | Reseau entrant | SSH uniquement (aucun autre port) |
 | Acces | Compte avec sudo |
 
-> ⚠️ **Ne pas provisionner SOUS ces minima, meme pour une preprod.** Vecu Kyklos
+> ⚠️ **Ne pas provisionner SOUS ces minima, meme pour une preprod.** Vecu chez une PME
 > (2026-08) : serveur livre a 2 vCPU / 3,8 Go — la stack tourne, mais sans marge :
 > les incidents OOM d'aout (n8n, NocoDB, Postgres) sont arrives sur une machine
 > mieux dotee. Verifier des la reception : `nproc`, `free -h`, `df -h /`.
@@ -358,11 +358,11 @@ Points cles :
 - NocoDB utilise `NC_DB_JSON` (objet) et non `NC_DB` (URL) — evite les crashloops si le password contient des caracteres speciaux
 - **Toutes les images sont epinglees** (jamais `:latest`) : un `pull` surprise = migration
   de schema sans retour arriere, et une **restauration de backup exige la meme version
-  que la source** (vecu Kyklos 2026-08 : serveur en `:latest` 2026.07.0 face a une prod
+  que la source** (vecu chez une PME, 2026-08 : serveur en `:latest` 2026.07.0 face a une prod
   epinglee 2026.04.5 — a realigner avant tout transfert de donnees). Mettre la version
   que VOUS exploitez, et ne la monter que volontairement
 - **`mem_limit` sur n8n et NocoDB** : sans plafond, une rafale d'imports peut pousser un
-  service a evincer les autres (incidents OOM Kyklos, aout 2026). Ajuster a la RAM du
+  service a evincer les autres (incidents OOM chez une PME, aout 2026). Ajuster a la RAM du
   serveur, mais toujours en poser un
 
 ---
@@ -522,7 +522,7 @@ sudo systemctl status spark-cloudflared.service
 > sudo systemctl disable --now cloudflared.service
 > ```
 >
-> (Vecu Kyklos 2026-07 : l'installation a fini sur le `cloudflared.service` du paquet —
+> (Vecu chez une PME, 2026-07 : l'installation a fini sur le `cloudflared.service` du paquet —
 > fonctionnel, mais a documenter pour ne pas activer le doublon ensuite.)
 
 ### 4.6 — Mettre a jour le .env
@@ -709,4 +709,4 @@ sudo journalctl -u spark-cloudflared.service --since "5 min ago"
 
 Les **jobs planifies** du site (sauvegardes, drill de restauration, controles metier)
 s'installent ensuite depuis le repo client — voir son `infra/deploy/systemd/README.md`
-(exemple : repo `kyklos`, 11 units traduites des launchd du Mac mini).
+(exemple : repo d'une PME, 11 units traduites des launchd du Mac mini).
