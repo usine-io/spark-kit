@@ -1,5 +1,7 @@
 # Installation Spark sur serveur Linux — Guide pas a pas
 
+> ⚠️ **Guide GENERIQUE.** Si le site a un **repo de deploiement dedie** (playbook remis a l'hebergeur), c'est **lui qui fait foi** : ne pas melanger les deux. Les sous-domaines, l'architecture d'entree (tunnel ou acces direct), les chemins des fronts et l'epinglage des images y different de ce guide, et un melange donne une stack qui demarre mais sert les mauvais noms.
+
 > Ce guide part d'un serveur Debian 12+ (Bookworm) ou Ubuntu 22.04+ vierge et aboutit a une stack Spark operationnelle en HTTPS. Temps total : ~30 minutes.
 >
 > Pour un Mac Mini, voir le [guide macOS](INSTALL.md). Apres l'installation, configurer Claude Code avec [CLAUDE-CODE.md](CLAUDE-CODE.md).
