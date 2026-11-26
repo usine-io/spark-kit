@@ -54,12 +54,13 @@ if [ "$mode" = compare ]; then
   fi
   wb="$(rv "$before" workflows_active)"; wa="$(rv "$after" workflows_active)"
   if [ "$wb" = "$wa" ]; then ok "workflows actifs identiques : ${wb:-(aucun)}"; else fail "workflows actifs : avant « $wb », apres « $wa »"; fi
-  for ep in $(sed -n 's/^latence_\(.*\)_ms=.*/\1/p' "$before"); do
+  while IFS= read -r ep; do
+    [ -n "$ep" ] || continue
     lb="$(rv "$before" "latence_${ep}_ms")"; la="$(rv "$after" "latence_${ep}_ms")"
     case "$lb$la" in ''|*[!0-9]*) fail "latence $ep illisible (avant « $lb », apres « $la ») : endpoint hors service ou en maintenance au moment du releve"; continue ;; esac
     limit=$((lb * 2 + 50))
     if [ "$la" -le "$limit" ]; then ok "latence $ep : $lb -> $la ms (<= $limit)"; else fail "latence $ep : $lb -> $la ms (> $limit)"; fi
-  done
+  done < <(sed -n 's/^latence_\(.*\)_ms=.*/\1/p' "$before")
   printf 'version : %s -> %s ; executions : %s -> %s ; identifiants : %s -> %s\n' \
     "$(rv "$before" n8n_version)" "$(rv "$after" n8n_version)" "$(rv "$before" executions)" "$(rv "$after" executions)" \
     "$(rv "$before" credentials)" "$(rv "$after" credentials)"

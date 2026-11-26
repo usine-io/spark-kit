@@ -80,12 +80,12 @@ services:
       # couvre les webhooks de test comme de production.
       N8N_WEBHOOK_URL: https://${SPARK_PREFIX}-app.${SPARK_DOMAIN}/
       # Sauts de proxy entre le client et n8n (Express `trust proxy`). Chemin de production :
-      # Cloudflare (ecrit l'IP du client dans X-Forwarded-For) -> cloudflared -> Caddy (ajoute un
-      # saut) -> n8n : 2. Mesure derriere Caddy seul (UPGRADES.md, fiche n8n) : avec 1, n8n voit
-      # l'IP TCP du client de Caddy et ignore un X-Forwarded-For forge ; avec 2, il prend la valeur
-      # de l'en-tete. Caddy n'etant joignable que par le tunnel (127.0.0.1), 2 est la valeur du kit ;
-      # une valeur trop basse donne la meme IP (celle de cloudflared) a tous les utilisateurs et
-      # fausse le limiteur de connexions (vecu).
+      # Cloudflare (ecrit l'IP du visiteur dans X-Forwarded-For) -> cloudflared -> Caddy (ajoute un
+      # saut) -> n8n : 2. Mesure derriere Caddy seul (UPGRADES.md, fiche n8n) : avec 1, n8n retient
+      # l'IP TCP du client de Caddy ; avec 2, le dernier element de l'en-tete (le visiteur). Exige
+      # `trusted_proxies` dans le Caddyfile du kit (sinon Caddy efface l'en-tete). Une valeur trop
+      # basse donne la meme IP (celle de cloudflared) a tous les utilisateurs et fausse le limiteur
+      # de connexions (vecu).
       N8N_PROXY_HOPS: ${N8N_PROXY_HOPS:-2}
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
       NODE_ENV: production

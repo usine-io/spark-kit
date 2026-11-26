@@ -10,6 +10,13 @@
 # propres vont dans sites.d/*.caddy, ses en-tetes supplementaires aussi (import des snippets).
 {
 	auto_https off
+	# Caddy ne garde X-Forwarded-For que s'il vient d'un proxy de confiance ; sinon il le remplace par
+	# l'IP TCP du client. cloudflared (conteneur du reseau compose, ou 127.0.0.1 en variante hote) doit
+	# etre de confiance pour que l'IP du visiteur ecrite par Cloudflare atteigne n8n (N8N_PROXY_HOPS=2).
+	# Les seuls clients de Caddy sont cloudflared et les sondes locales : les plages privees suffisent.
+	servers {
+		trusted_proxies static private_ranges
+	}
 }
 
 # Page de maintenance : active tant que le fichier /etc/caddy/MAINTENANCE existe, c'est-a-dire

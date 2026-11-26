@@ -153,6 +153,19 @@ if command -v shellcheck >/dev/null 2>&1; then
 else
   printf '  INFO  shellcheck absent : non joue (apt install shellcheck / brew install shellcheck)\n'
 fi
+# Plists launchd : XML bien forme une fois __HOME__ substitue (un `--` dans un commentaire XML suffit
+# a les rendre illisibles par launchd ; plutil n'existe que sur macOS, plistlib partout ou python3 est).
+if command -v python3 >/dev/null 2>&1; then
+  for p in "$KIT_DIR"/deploy/macos/launchd/*.plist; do
+    if sed "s|__HOME__|/Users/acme|g" "$p" | python3 -c 'import plistlib,sys; d=plistlib.loads(sys.stdin.buffer.read()); sys.exit(0 if d.get("Label") and d.get("ProgramArguments") else 1)' 2>/dev/null; then
+      ok "$(basename "$p") : plist valide (Label, ProgramArguments)"
+    else
+      fail "$(basename "$p") : plist invalide (XML mal forme ou cle manquante)"
+    fi
+  done
+else
+  printf '  INFO  python3 absent : plists launchd non verifies\n'
+fi
 
 printf '== 6. check-env.sh : valeur resolue, sans guillemets ni espaces (cas T19)\n'
 # Le .env genere est complet ; puis des copies ou SPARK_PREFIX est vide, fait d'espaces, long d'un
@@ -310,16 +323,18 @@ if [ "$up" -eq 1 ]; then
     if printf '%s' "$h" | grep -qiE '^(server|x-powered-by):'; then missing="$missing [Server/X-Powered-By present]"; fi
     if [ -z "$missing" ]; then ok "-$svc : en-tetes de securite presents, Server et X-Powered-By absents"; else fail "-$svc : en-tetes manquants$missing"; fi
   done
-  xfo_n8n="$(headers_of n8n / | grep -i '^x-frame-options:' | tr -d '\r' | awk '{print $2}')"
-  xfo_app="$(headers_of app /apps/ | grep -i '^x-frame-options:' | tr -d '\r' | awk '{print $2}')"
+  # (chaque extraction se termine par `|| true` : un en-tete absent est un FAIL affiche, pas un arret du script)
+  xfo_n8n="$(headers_of n8n / | { grep -i '^x-frame-options:' || true; } | tr -d '\r' | awk '{print $2}' | tr '\n' '+' | sed 's/+$//')"
+  # (sur -app, `/` passe par n8n ; un 404 de file_server sur /apps/ n'a pas les en-tetes differes)
+  xfo_app="$(headers_of app / | { grep -i '^x-frame-options:' || true; } | tr -d '\r' | awk '{print $2}' | tr '\n' '+' | sed 's/+$//')"
   if [ "$xfo_n8n" = "DENY" ] && [ "$xfo_app" = "SAMEORIGIN" ]; then ok "X-Frame-Options : DENY sur -n8n, SAMEORIGIN sur -app"; else fail "X-Frame-Options : -n8n « $xfo_n8n », -app « $xfo_app »"; fi
-  acao="$(headers_of db /api/v1/health | grep -i '^access-control-allow-origin:' | tr -d '\r' | awk '{print $2}')"
+  acao="$(headers_of db /api/v1/health | { grep -i '^access-control-allow-origin:' || true; } | tr -d '\r' | awk '{print $2}' | tr '\n' '+' | sed 's/+$//')"
   if [ "$acao" = "https://$PREFIX-app.$DOMAIN" ]; then ok "-db : Access-Control-Allow-Origin = https://$PREFIX-app.$DOMAIN"; else fail "-db : Access-Control-Allow-Origin « $acao »"; fi
   # Drapeau MAINTENANCE : 503 + Retry-After sur tous les vhosts (webhook compris), retour apres retrait.
   touch "$INFRA/config/caddy/MAINTENANCE"
   spark_compose -p "$PROJECT" exec -T caddy caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || fail "caddy reload (MAINTENANCE pose)"
   m="$(code_of n8n /rest/settings) $(code_of app /webhook/x -X POST) $(code_of db /api/v1/health) $(code_of selftest /) $(code_of n8n /healthz/readiness)"
-  retry="$(headers_of app / | grep -i '^retry-after:' | tr -d '\r' | awk '{print $2}')"
+  retry="$(headers_of app / | { grep -i '^retry-after:' || true; } | tr -d '\r' | awk '{print $2}')"
   if [ "$m" = "503 503 503 503 200" ] && [ "$retry" = "300" ]; then ok "MAINTENANCE pose : 503 sur -n8n, -app (POST /webhook), -db, sites.d, Retry-After 300 ; /healthz/readiness reste servi (200)"; else fail "MAINTENANCE pose : codes « $m » (attendu 503 503 503 503 200), Retry-After « $retry »"; fi
   rm -f "$INFRA/config/caddy/MAINTENANCE"
   spark_compose -p "$PROJECT" exec -T caddy caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || fail "caddy reload (MAINTENANCE retire)"
@@ -345,10 +360,13 @@ if [ "$up" -eq 1 ]; then
   # Config cloudflared generee : validee par l'image du compose, sans jeton ni compte (aucun tunnel ouvert)
   cfd_image="$(spark_compose -p "$PROJECT" --profile tunnel config --images 2>/dev/null | grep '^cloudflare/cloudflared' | head -1 || true)"
   # --user comme le compose (SPARK_UID:SPARK_GID) : config.yml et <id>.json sont en 600, proprietaire = l'installateur.
-  if [ -n "$cfd_image" ] && docker run --rm --user "$(id -u):$(id -g)" -v "$work/cfd:/etc/cloudflared:ro" "$cfd_image" tunnel --config /etc/cloudflared/config.yml ingress validate >/dev/null 2>&1; then
+  # (meme commande que l'etape 4.4 des guides, hors compose : le projet de test n'a pas de SPARK_TUNNEL_DIR
+  # dans son .env ; la sortie est gardee pour que l'echec dise pourquoi, jamais un simple « FAIL »)
+  if [ -n "$cfd_image" ] && out="$(docker run --rm --user "$(id -u):$(id -g)" -v "$work/cfd:/etc/cloudflared:ro" "$cfd_image" tunnel --config /etc/cloudflared/config.yml ingress validate 2>&1)" \
+     && printf '%s' "$out" | grep -qx 'OK'; then
     ok "cloudflared tunnel ingress validate : config.yml acceptee par $cfd_image"
   else
-    fail "cloudflared tunnel ingress validate (image « $cfd_image »)"
+    fail "cloudflared tunnel ingress validate (image « $cfd_image ») : $(printf '%s' "${out:-}" | tail -2 | tr '\n' ' ')"
   fi
   cfd_user="$(docker image inspect --format '{{.Config.User}}' "$cfd_image" 2>/dev/null || true)"
   if [ "$cfd_user" = "65532:65532" ]; then ok "image cloudflared : utilisateur non root ($cfd_user)"; else fail "image cloudflared : utilisateur « $cfd_user »"; fi

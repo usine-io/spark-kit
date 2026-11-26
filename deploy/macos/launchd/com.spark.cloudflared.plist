@@ -3,7 +3,8 @@
 <!-- deploy/macos/launchd/com.spark.cloudflared.plist : VARIANTE « cloudflared sur l'hote ».
      Par defaut, le tunnel tourne dans le compose (profil tunnel, COMPOSE_PROFILES=tunnel) et ce
      fichier ne sert pas. Si un site prefere le binaire Homebrew : config ecrite par
-     infra/scripts/tunnel-config.sh --host (config-spark.yml), puis
+     infra/scripts/tunnel-config.sh en variante hote (option « host », fichier config-spark.yml ;
+     un double tiret est interdit dans un commentaire XML, d'ou cette formulation), puis
        sed "s|__HOME__|$HOME|g" deploy/macos/launchd/com.spark.cloudflared.plist > ~/Library/LaunchAgents/com.spark.cloudflared.plist
      Un seul tunnel a la fois : ne jamais charger cet agent avec le profil tunnel actif. -->
 <plist version="1.0">
