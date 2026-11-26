@@ -1,13 +1,17 @@
 [Unit]
-Description=Spark Cloudflare Tunnel
-After=network-online.target
+Description=Spark Cloudflare Tunnel (variante : connecteur sur l'hote ; par defaut il tourne dans le compose, profil tunnel)
+After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=spark
 Group=spark
-ExecStart=/usr/bin/cloudflared tunnel --config /opt/spark/.cloudflared/config-spark.yml run
+# Un seul connecteur a la fois : si le conteneur du profil tunnel tourne (spark-cloudflared-1),
+# cette unit refuse de demarrer (journalctl -u spark-cloudflared.service nomme la cause). Retirer
+# d'abord le conteneur : docker compose --profile tunnel stop cloudflared && docker compose --profile tunnel rm -f cloudflared
+ExecStartPre=/bin/sh -c 'if docker ps --format "{{.Names}}" 2>/dev/null | grep -q "^spark-cloudflared-"; then echo "spark-cloudflared.service : le conteneur cloudflared du compose tourne deja (profil tunnel), un seul connecteur a la fois" >&2; exit 1; fi'
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --config /opt/spark/.cloudflared/config-spark.yml run
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5

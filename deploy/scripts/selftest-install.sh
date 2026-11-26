@@ -7,21 +7,24 @@
 #            tunnel et runners et l'override compose.runners.yml), `caddy validate` avec sites.d/
 #            vide puis avec un fichier, `caddy fmt --diff` sans ecart, verifie que chaque chemin
 #            monte existe (test -f), puis teste check-env.sh (valeurs vides, espaces, un caractere,
-#            variable exportee mais ligne absente), la priorite environnement > .env de lib.sh, le
-#            verrou d'execution, l'alerte de backup.sh quand il s'arrete avant d'avoir commence
-#            (.env absent : ligne ALERTE ; variable manquante : ligne ALERTE + POST recu par un
-#            webhook local), tunnel-config.sh (config ecrite depuis le .env, --check), et shellcheck
-#            sur les scripts s'il est installe.
+#            variable exportee mais ligne absente, coherence des profils : tunnel sans config.yml,
+#            runners sans override et l'inverse), init-env.sh --sync (variable nouvelle et ligne
+#            commentee #COMPOSE_FILE ajoutees, rejeu « deja a jour »), la priorite environnement >
+#            .env de lib.sh, le verrou d'execution, l'alerte de backup.sh quand il s'arrete avant
+#            d'avoir commence (.env absent : ligne ALERTE ; variable manquante : ligne ALERTE + POST
+#            recu par un webhook local), tunnel-config.sh (config ecrite depuis le .env, --check), et
+#            les scripts passes a shellcheck s'il est installe (sinon une ligne INFO, pas un echec).
 #   --up     demarre ensuite la stack sous le projet compose `spark-selftest` (port hote 18090),
 #            verifie que cloudflared et runners ne demarrent PAS sans profil, attend que -n8n
 #            (/healthz/readiness) et -db repondent via Caddy avec un MARQUEUR dans le corps, que les
-#            trois services deviennent `healthy`, qu'un Host inconnu recoit 404, que les en-tetes de
-#            securite sont la sur chaque vhost (et le CORS de -db), que le drapeau MAINTENANCE donne
-#            503 partout puis se retire, que le journal d'acces s'ecrit, que la config cloudflared
-#            generee passe `cloudflared tunnel ingress validate`, que le sidecar runners demarre avec
-#            son profil ; puis, si `age` est installe, joue backup.sh et restore-test.sh sur cette
-#            stack et verifie que le nombre de volumes Docker anonymes est le meme avant et apres
-#            (restore-test.sh ne laisse rien), puis detruit tout.
+#            quatre services deviennent `healthy`, qu'un Host inconnu recoit 404, que les en-tetes de
+#            securite sont la sur chaque vhost (et le CORS de -db) ET sur les reponses d'erreur (404
+#            de l'attrape-tout, 404 de file_server sur -app : sans `Server: Caddy`), que le drapeau
+#            MAINTENANCE donne 503 partout puis se retire, que le journal d'acces s'ecrit, que la
+#            config cloudflared generee passe `cloudflared tunnel ingress validate`, que le sidecar
+#            runners demarre avec son profil ; puis, si `age` est installe, joue backup.sh et
+#            restore-test.sh sur cette stack et verifie que le nombre de volumes Docker anonymes est
+#            le meme avant et apres (restore-test.sh ne laisse rien), puis detruit tout.
 #   --keep   conserve le repertoire temporaire (affiche) pour inspection.
 # Sortie 0 si tout passe, 1 sinon. Ne touche pas a une stack `spark` deja presente sur la machine.
 # Se lance depuis le DEPOT DU KIT (spark-kit/deploy/scripts/) : la copie dans infra/scripts/ n'a pas
@@ -190,6 +193,34 @@ grep -v '^SPARK_PREFIX=' "$INFRA/.env" > "$work/env-case"
 rc=0; out="$(SPARK_PREFIX=exportee "$INFRA/scripts/check-env.sh" --env "$work/env-case" SPARK_PREFIX 2>&1)" || rc=$?
 if [ "$rc" -eq 1 ]; then ok "SPARK_PREFIX exportee dans le shell, ligne absente -> code 1 ($out)"; else fail "SPARK_PREFIX exportee, ligne absente -> code $rc, attendu 1 ($out)"; fi
 rm -f "$work/env-case"
+# Coherence des profils (mode par defaut seulement) : tunnel sans config.yml, runners sans override, override sans profil.
+profile_case() {  # libelle, lignes a substituer (COMPOSE_PROFILES, COMPOSE_FILE, SPARK_TUNNEL_*), code attendu, motif attendu
+  local label="$1" lines="$2" want="$3" motif="$4" f="$work/env-prof" rc=0 out
+  grep -v -E '^#?(COMPOSE_PROFILES|COMPOSE_FILE|SPARK_TUNNEL_ID|SPARK_TUNNEL_DIR)=' "$INFRA/.env" > "$f"
+  printf '%s\n' "$lines" >> "$f"
+  out="$("$INFRA/scripts/check-env.sh" --env "$f" 2>&1)" || rc=$?
+  case "$rc:$out" in "$want":*"$motif"*) ok "profils : $label -> code $rc" ;; *) fail "profils : $label -> code $rc (attendu $want, motif « $motif »), sortie : $(printf '%s' "$out" | grep COMPOSE_PROFILES)" ;; esac
+}
+profile_case "aucun profil" "COMPOSE_PROFILES=" 0 "COMPOSE_PROFILES coherent (aucun profil)"
+profile_case "tunnel sans SPARK_TUNNEL_DIR" "COMPOSE_PROFILES=tunnel" 1 "profil tunnel sans SPARK_TUNNEL_ID ou SPARK_TUNNEL_DIR"
+profile_case "tunnel sans config.yml" "$(printf 'COMPOSE_PROFILES=tunnel\nSPARK_TUNNEL_ID=12345678-1234-4123-8123-123456789abc\nSPARK_TUNNEL_DIR=%s' "$work")" 1 "sans $work/config.yml"
+printf '# selftest\n' > "$work/config.yml"
+profile_case "tunnel avec config.yml" "$(printf 'COMPOSE_PROFILES=tunnel\nSPARK_TUNNEL_ID=12345678-1234-4123-8123-123456789abc\nSPARK_TUNNEL_DIR=%s' "$work")" 0 "COMPOSE_PROFILES coherent (tunnel)"
+rm -f "$work/config.yml"
+profile_case "runners sans COMPOSE_FILE" "COMPOSE_PROFILES=runners" 1 "profil runners sans COMPOSE_FILE"
+profile_case "COMPOSE_FILE sans profil runners" "$(printf 'COMPOSE_PROFILES=\nCOMPOSE_FILE=compose.yml:compose.runners.yml')" 1 "sans le profil runners"
+profile_case "runners avec COMPOSE_FILE" "$(printf 'COMPOSE_PROFILES=runners\nCOMPOSE_FILE=compose.yml:compose.runners.yml')" 0 "COMPOSE_PROFILES coherent (runners)"
+rm -f "$work/env-prof"
+# init-env.sh --sync : ajoute les variables nouvelles ET la ligne commentee #COMPOSE_FILE a un .env qui ne l'a pas.
+grep -v -E '^#?(COMPOSE_FILE|NOCODB_MEM_LIMIT)=' "$INFRA/.env" > "$work/env-sync"
+if out="$("$INFRA/scripts/init-env.sh" --sync "$work/env-sync" 2>&1)" && grep -q '^NOCODB_MEM_LIMIT=900m$' "$work/env-sync" \
+   && grep -q '^#COMPOSE_FILE=compose.yml:compose.runners.yml$' "$work/env-sync" && [ "$(grep -c '^#\{0,1\}COMPOSE_FILE=' "$work/env-sync")" -eq 1 ]; then
+  ok "init-env.sh --sync : $out"
+else
+  fail "init-env.sh --sync : « $out » (NOCODB_MEM_LIMIT ou #COMPOSE_FILE non ajoutes)"
+fi
+if out="$("$INFRA/scripts/init-env.sh" --sync "$work/env-sync" 2>&1)" && printf '%s' "$out" | grep -q 'deja a jour'; then ok "init-env.sh --sync rejoue : $out"; else fail "init-env.sh --sync rejoue : « $out »"; fi
+rm -f "$work/env-sync"
 
 printf '== 7. lib.sh : priorite de l environnement sur une ligne vide du .env, verrou\n'
 printf 'SPARK_ALERT_WEBHOOK=\nOTHER=from-env-file\n' > "$work/env-prec"
@@ -314,18 +345,28 @@ if [ "$up" -eq 1 ]; then
   unknown="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H "Host: nope.$DOMAIN" "http://127.0.0.1:$PORT/" 2>/dev/null || printf '000')"
   if [ "$unknown" = "404" ]; then ok "Host inconnu -> 404"; else fail "Host inconnu -> $unknown, attendu 404"; fi
   # En-tetes de securite (snippet securite) sur chaque vhost, X-Frame-Options selon le vhost, CORS sur -db.
-  for svc in n8n app db selftest; do
-    h="$(headers_of "$svc" /)"
-    missing=""
+  # Les reponses d'ERREUR aussi (SECURITY.md §2.2 vaut pour toute reponse) : 404 de l'attrape-tout, 404
+  # de file_server sur -app (/apps/<absent>) : Caddy n'applique pas un bloc `header` differe a une erreur,
+  # le kit les pose dans handle_errors ; sans cela, `Server: Caddy` sortait et les en-tetes manquaient.
+  check_headers() {  # libelle, en-tetes bruts
+    local label="$1" h="$2" missing="" want
     for want in 'strict-transport-security: max-age=63072000; includeSubDomains' 'x-content-type-options: nosniff' 'referrer-policy: strict-origin-when-cross-origin' 'permissions-policy: accelerometer=()'; do
       printf '%s' "$h" | grep -qi "^$want" || missing="$missing [$want]"
     done
     if printf '%s' "$h" | grep -qiE '^(server|x-powered-by):'; then missing="$missing [Server/X-Powered-By present]"; fi
-    if [ -z "$missing" ]; then ok "-$svc : en-tetes de securite presents, Server et X-Powered-By absents"; else fail "-$svc : en-tetes manquants$missing"; fi
+    if [ -z "$missing" ]; then ok "$label : en-tetes de securite presents, Server et X-Powered-By absents"; else fail "$label : en-tetes manquants$missing"; fi
+  }
+  for svc in n8n app db selftest; do
+    check_headers "-$svc" "$(headers_of "$svc" /)"
   done
+  h_unknown="$(curl -s -m 10 -D - -o /dev/null -H "Host: nope.$DOMAIN" "http://127.0.0.1:$PORT/" 2>/dev/null || true)"
+  check_headers "Host inconnu (404 attrape-tout)" "$h_unknown"
+  app404="$(code_of app /apps/fichier-absent-selftest)"
+  if [ "$app404" = "404" ]; then ok "-app /apps/<absent> -> 404 (file_server)"; else fail "-app /apps/<absent> -> $app404, attendu 404"; fi
+  check_headers "-app 404 de file_server (handle_errors)" "$(headers_of app /apps/fichier-absent-selftest)"
   # (chaque extraction se termine par `|| true` : un en-tete absent est un FAIL affiche, pas un arret du script)
   xfo_n8n="$(headers_of n8n / | { grep -i '^x-frame-options:' || true; } | tr -d '\r' | awk '{print $2}' | tr '\n' '+' | sed 's/+$//')"
-  # (sur -app, `/` passe par n8n ; un 404 de file_server sur /apps/ n'a pas les en-tetes differes)
+  # (sur -app, `/` passe par n8n ; X-Frame-Options est pose par vhost avec `>`, hors des erreurs)
   xfo_app="$(headers_of app / | { grep -i '^x-frame-options:' || true; } | tr -d '\r' | awk '{print $2}' | tr '\n' '+' | sed 's/+$//')"
   if [ "$xfo_n8n" = "DENY" ] && [ "$xfo_app" = "SAMEORIGIN" ]; then ok "X-Frame-Options : DENY sur -n8n, SAMEORIGIN sur -app"; else fail "X-Frame-Options : -n8n « $xfo_n8n », -app « $xfo_app »"; fi
   acao="$(headers_of db /api/v1/health | { grep -i '^access-control-allow-origin:' || true; } | tr -d '\r' | awk '{print $2}' | tr '\n' '+' | sed 's/+$//')"

@@ -30,8 +30,9 @@ services:
     <<: *logging
     restart: unless-stopped
     # Plafond memoire : sans lui, c'est Postgres que le noyau tue en premier quand un autre
-    # service deborde (vecu). A dimensionner avec shared_buffers (lot PostgreSQL 18 : reglages
-    # `command`). 512 Mo tiennent une stack Spark de depart ; plus si la base metier grossit.
+    # service deborde (vecu). A dimensionner avec shared_buffers (reglages `command` prevus avec la
+    # prochaine version majeure de PostgreSQL, voir ROADMAP.md). 512 Mo tiennent une stack Spark
+    # de depart ; plus si la base metier grossit.
     mem_limit: ${PG_MEM_LIMIT:-512m}
     shm_size: 256m
     networks: [spark]
@@ -58,9 +59,10 @@ services:
     <<: *logging
     restart: unless-stopped
     # Sans plafond, une rafale pousse n8n a evincer Postgres (OOM repetes, vecu chez une PME).
-    # Regle de dimensionnement : N8N_HEAP_MB + N8N_RUNNERS_HEAP_MB + ~200 Mo <= N8N_MEM_LIMIT
-    # (en mode runner interne, le runner vit dans le meme cgroup que n8n). 1 Go est le minimum,
-    # 1,5 Go conseille sur un serveur de 8 Go. Le sidecar (profil runners) decouple les deux.
+    # Regle de dimensionnement : N8N_HEAP_MB + N8N_RUNNERS_HEAP_MB + ~200 Mio <= N8N_MEM_LIMIT
+    # (en mode runner interne, le runner vit dans le meme cgroup que n8n) ; defauts : 608 + 192 +
+    # 200 = 1000 Mio sous 1g (1024 Mio). 1 Go est le minimum, 1,5 Go conseille sur un serveur de
+    # 8 Go (1536m / 1024 / 256). Le sidecar (profil runners) decouple les deux.
     mem_limit: ${N8N_MEM_LIMIT:-1g}
     networks: [spark]
     depends_on:
@@ -107,7 +109,7 @@ services:
       EXECUTIONS_DATA_MAX_AGE: "168"
       EXECUTIONS_DATA_PRUNE_MAX_COUNT: "150000"
       # Tas Node borne SOUS mem_limit (sinon le cgroup tue le processus avant que V8 ne collecte).
-      NODE_OPTIONS: "--max-old-space-size=${N8N_HEAP_MB:-640}"
+      NODE_OPTIONS: "--max-old-space-size=${N8N_HEAP_MB:-608}"
       # Task runners (toujours actifs en 2.x). Mode interne par defaut : le runner est un processus
       # enfant dans le meme cgroup, avec son propre plafond de tas. Mode externe = profil runners
       # + override compose.runners.yml (banc dans UPGRADES.md). La valeur ci-dessous est posee
@@ -166,7 +168,7 @@ services:
     image: nocodb/nocodb:2026.04.5@sha256:4498ea3612227f43842468033e27661ff3db4775a5cbc40399695198329ee2b2
     <<: *logging
     restart: unless-stopped
-    mem_limit: 900m
+    mem_limit: ${NOCODB_MEM_LIMIT:-900m}
     networks: [spark]
     depends_on:
       postgres: { condition: service_healthy }
@@ -224,10 +226,14 @@ services:
       start_period: 150s
 
   # --- Tunnel Cloudflare en conteneur (profil `tunnel`) ------------------------------------------
-  # Demarre seulement avec le profil (COMPOSE_PROFILES=tunnel dans .env a l'etape 4 des guides) :
-  # sans jeton ni identifiants de tunnel, il n'a rien a faire et ne doit pas tourner.
+  # Cree seulement avec le profil (COMPOSE_PROFILES=tunnel dans .env, pose a l'etape 4 des guides
+  # APRES tunnel-config.sh : sans config.yml il boucle en redemarrage). Sans profil, `up -d` ne le
+  # cree pas. ATTENTION : retirer le profil du .env ne retire PAS un conteneur deja cree (il
+  # survit au reload et au reboot, `restart: always`) ; le retrait est explicite :
+  #   docker compose --profile tunnel stop cloudflared && docker compose --profile tunnel rm -f cloudflared
   # Variante « cloudflared sur l'hote » : deploy/linux/systemd/spark-cloudflared.service (Linux)
   # ou deploy/macos/launchd/com.spark.cloudflared.plist (macOS), fiche de bascule dans UPGRADES.md.
+  # Un seul connecteur a la fois (l'unit hote refuse de demarrer si ce conteneur tourne).
   cloudflared:
     image: cloudflare/cloudflared:2026.11.2@sha256:55c7e3e8d89d5e8d20b75a82f3602cbf98e06db406e73e282073cfdc5a9a3af6
     <<: *logging
@@ -236,7 +242,7 @@ services:
     # arret manuel (`docker compose stop cloudflared`) coupe le site, il ne doit pas survivre a
     # un redemarrage du demon Docker par accident.
     restart: always
-    mem_limit: 128m
+    mem_limit: ${CLOUDFLARED_MEM_LIMIT:-128m}
     networks: [spark]
     # L'image tourne en utilisateur non root (65532) et sans shell. `user:` la fait tourner sous
     # l'utilisateur hote qui possede le repertoire des identifiants (SPARK_UID/SPARK_GID, poses par

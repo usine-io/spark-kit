@@ -6,7 +6,9 @@
 #
 # --sync : mise a jour du kit sur un site existant. Ajoute a la fin du .env les variables que
 # env.example a et que le .env n'a pas (valeur du gabarit ; les secrets nouveaux sont generes,
-# SPARK_UID/SPARK_GID poses), sans toucher aux lignes existantes ; affiche les noms ajoutes.
+# SPARK_UID/SPARK_GID poses), ainsi que les lignes commentees `#NOM=valeur` du gabarit (ex.
+# `#COMPOSE_FILE=compose.yml:compose.runners.yml`, a decommenter pour le sidecar) quand le .env
+# n'a ni `NOM=` ni `#NOM=`, sans toucher aux lignes existantes ; affiche les noms ajoutes.
 #
 # Copie le gabarit, renseigne SPARK_PREFIX / SPARK_DOMAIN / SPARK_HOST_HTTP_PORT, SPARK_UID / SPARK_GID
 # (utilisateur courant, pour le conteneur cloudflared) et genere les secrets d'infrastructure vides
@@ -48,9 +50,20 @@ if [ "$sync" -eq 1 ]; then
   [ -w "$target" ] || { printf '%s non inscriptible\n' "$target" >&2; exit 2; }
   added=""
   while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in [A-Z_0-9]*=*) ;; *) continue ;; esac
-    name="${line%%=*}"
-    grep -q "^${name}=" "$target" && continue
+    case "$line" in
+      [A-Z_0-9]*=*) commented=0 ;;
+      '#'[A-Z_0-9]*=*) commented=1 ;;   # option documentee du gabarit (ex. #COMPOSE_FILE=...)
+      *) continue ;;
+    esac
+    name="${line%%=*}"; name="${name#\#}"
+    case "$name" in *[!A-Z0-9_]*) continue ;; esac
+    grep -q "^#\{0,1\}${name}=" "$target" && continue
+    if [ "$commented" -eq 1 ]; then
+      [ -n "$added" ] || printf '\n# --- Ajoute par init-env.sh --sync (variables nouvelles du kit) ---\n' >> "$target"
+      printf '%s\n' "$line" >> "$target"
+      added="$added #$name"
+      continue
+    fi
     case "$name" in
       N8N_RUNNERS_AUTH_TOKEN) value="$(openssl rand -hex 32)" ;;
       SPARK_UID) value="$(id -u)" ;;

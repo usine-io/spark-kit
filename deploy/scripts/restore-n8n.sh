@@ -43,7 +43,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$stamp" ] || spark_die "horodatage du jeu de sauvegarde manquant (ex. 20260101-120000)"
 case "$stamp" in [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]) ;; *) spark_die "horodatage invalide : $stamp (attendu AAAAMMJJ-HHMMSS)" ;; esac
-case "$expect" in ''|*[0-9]) ;; *) spark_die "--expect-migrations : nombre attendu" ;; esac
+case "$expect" in '') ;; *[!0-9]*) spark_die "--expect-migrations : nombre attendu, recu « $expect »" ;; esac
 
 INFRA_DIR="$(spark_infra_dir "$SCRIPT_DIR")"
 cd "$INFRA_DIR"
@@ -78,12 +78,13 @@ if [ "$confirm" -ne 1 ]; then
 fi
 
 status=2
+phase="avant tout arret : rien n'a ete modifie"
 section=""
 cleanup() {
   rc=$?
   [ -n "$section" ] && rm -f "$section"
   if [ "$status" -ne 0 ]; then
-    spark_alert "restore-n8n.sh" "restauration n8n du jeu $stamp en echec (code $rc) : n8n est probablement arrete, base a verifier"
+    spark_alert "restore-n8n.sh" "restauration n8n du jeu $stamp en echec (code $rc), $phase"
     exit 2
   fi
 }
@@ -92,6 +93,7 @@ SPARK_ALERT_TRAP=1
 
 # 1. Arret de n8n (et du sidecar s'il existe dans la configuration courante) -----------------
 spark_log "arret de n8n"
+phase="n8n arrete, base et volume a verifier avant tout redemarrage"
 spark_compose stop n8n >/dev/null
 # (pas de `| grep -q` sur une commande docker : grep quitterait avant la fin et SIGPIPE ferait
 # echouer le pipeline sous pipefail ; la liste est lue en entier dans une variable)
@@ -132,6 +134,7 @@ docker run --rm -v "$VOLUME:/v" -v "$BACKUP_DIR:/b:ro" "$TOOL_IMAGE" \
 spark_log "volume $VOLUME restaure"
 
 # 5. Redemarrage et readiness ----------------------------------------------------------------------------
+phase="base et volume restaures, n8n relance : readiness ou nombre de migrations a verifier (docker compose logs n8n)"
 spark_compose up -d n8n >/dev/null 2>&1 || spark_die "docker compose up -d n8n en echec"
 URL="http://127.0.0.1:${SPARK_HOST_HTTP_PORT:-18080}"
 ready=0
@@ -144,6 +147,7 @@ done
 migrations="$(spark_compose exec -T postgres psql -U postgres -d n8n -Atc 'SELECT count(*) FROM migrations' </dev/null)"
 spark_log "n8n pret ($(spark_compose exec -T n8n n8n --version </dev/null 2>/dev/null | tail -1 || printf '?')), $migrations migrations"
 if [ -n "$expect" ] && [ "$migrations" != "$expect" ]; then
+  phase="n8n est PRET mais a remigre la base restauree ($migrations migrations, $expect attendues) : remettre le compose du lot vise et rejouer la restauration"
   spark_die "$migrations migrations apres restauration, $expect attendues (le compose.yml en place n'est pas celui du lot vise ?)"
 fi
 status=0

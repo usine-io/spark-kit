@@ -14,8 +14,12 @@
 	# l'IP TCP du client. cloudflared (conteneur du reseau compose, ou 127.0.0.1 en variante hote) doit
 	# etre de confiance pour que l'IP du visiteur ecrite par Cloudflare atteigne n8n (N8N_PROXY_HOPS=2).
 	# Les seuls clients de Caddy sont cloudflared et les sondes locales : les plages privees suffisent.
+	# trusted_proxies_strict : `client_ip` du journal d'acces = l'IP la plus a DROITE de l'en-tete qui
+	# n'est pas un proxy de confiance (celle ecrite par Cloudflare), et non la plus a gauche, forgeable
+	# par le visiteur. C'est ce qui rend le journal comparable a l'IP que n8n retient (UPGRADES.md).
 	servers {
 		trusted_proxies static private_ranges
+		trusted_proxies_strict
 	}
 }
 
@@ -39,11 +43,12 @@
 	}
 }
 
-# En-tetes de securite (valeurs de reference : SECURITY.md §2.2) et journal d'acces.
-# HSTS sans `preload` : il engage tout le domaine de facon quasi irreversible.
-# Les suppressions (-X-Powered-By, -Server) different le bloc entier : les valeurs ecrasent donc
-# celles de l'application derriere (NocoDB envoie X-Powered-By: Express, par exemple).
-(securite) {
+# En-tetes de securite (valeurs de reference : SECURITY.md §2.2). HSTS sans `preload` : il engage
+# tout le domaine de facon quasi irreversible. Les suppressions (-X-Powered-By, -Server) different le
+# bloc entier : les valeurs ecrasent donc celles de l'application derriere (NocoDB envoie
+# X-Powered-By: Express, par exemple). Un bloc differe n'est PAS applique a une reponse d'erreur
+# (404 de file_server, 502 sans amont) : `securite` l'importe une seconde fois dans handle_errors.
+(entetes) {
 	header {
 		Strict-Transport-Security "max-age=63072000; includeSubDomains"
 		X-Content-Type-Options "nosniff"
@@ -52,12 +57,22 @@
 		-X-Powered-By
 		-Server
 	}
+}
+
+# Ce qu'un vhost importe : en-tetes, journal d'acces JSON, et les memes en-tetes sur les erreurs
+# (404 d'un fichier absent, 502 quand l'amont ne repond pas), sans `Server: Caddy`.
+(securite) {
+	import entetes
 	log {
 		output file /var/log/caddy/access.log {
 			roll_size 50mb
 			roll_keep 10
 		}
 		format json
+	}
+	handle_errors {
+		import entetes
+		respond "{err.status_code} {err.status_text}" {err.status_code}
 	}
 }
 
@@ -110,7 +125,9 @@ http://{$SPARK_PREFIX}-db.{$SPARK_DOMAIN} {
 import /etc/caddy/sites.d/*.caddy
 
 # Host inconnu : 404 explicite. Sans ce bloc, Caddy repondait 200 avec un corps vide a tout Host
-# qu'il ne connait pas, et les sondes mentaient (vecu : de nombreux faux rouges).
+# qu'il ne connait pas, et les sondes mentaient (vecu : de nombreux faux rouges). Memes en-tetes
+# que les vhosts (donc sans `Server: Caddy`) : SECURITY.md §2.2 vaut pour toute reponse du kit.
 http:// {
+	import entetes
 	respond "not found" 404
 }
