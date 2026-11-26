@@ -6,13 +6,22 @@
 #            `docker compose config` sans variable manquante, `caddy validate` avec sites.d/ vide
 #            puis avec un fichier, et verifie que chaque chemin monte existe (test -f).
 #   --up     demarre ensuite la stack sous le projet compose `spark-selftest` (port hote 18090),
-#            attend que -n8n et -db repondent via Caddy, puis detruit tout (down -v).
+#            attend que -n8n et -db repondent via Caddy avec un MARQUEUR dans le corps (Caddy repond
+#            200 et corps vide a tout Host inconnu : un 200 seul ne prouve rien), puis detruit tout.
 #   --keep   conserve le repertoire temporaire (affiche) pour inspection.
 # Sortie 0 si tout passe, 1 sinon. Ne touche pas a une stack `spark` deja presente sur la machine.
+# Se lance depuis le DEPOT DU KIT (spark-kit/deploy/scripts/) : la copie dans infra/scripts/ n'a pas
+# deploy/ a cote d'elle et s'arrete avec un message explicite.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+if [ ! -f "$KIT_DIR/deploy/compose.yml" ] || [ ! -f "$KIT_DIR/deploy/env.example" ]; then
+  printf 'selftest-install.sh : pas de deploy/ a cote de ce script (%s).\n' "$SCRIPT_DIR" >&2
+  printf 'Il se lance depuis le depot du kit, pas depuis la copie infra/scripts/ :\n' >&2
+  printf '  Linux : ~/spark-kit/deploy/scripts/selftest-install.sh --up\n  macOS : ~/spark/spark-kit/deploy/scripts/selftest-install.sh --up\n' >&2
+  exit 1
+fi
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
@@ -108,24 +117,27 @@ done
 if [ "$up" -eq 1 ]; then
   printf '== 6. docker compose up (projet %s, port %s)\n' "$PROJECT" "$PORT"
   spark_compose -p "$PROJECT" up -d --quiet-pull 2>&1 | grep -v -E '^\s*$' | sed 's/^/        /' || true
+  # Sonde par marqueur : Caddy repond 200 avec un corps vide a tout Host qu'il ne connait pas,
+  # un code 200 ne prouve donc pas le routage. On exige un fragment du corps propre au service.
   probe() {
-    curl -s -o /dev/null -w '%{http_code}' -H "Host: $PREFIX-$1.$DOMAIN" "http://127.0.0.1:$PORT/" 2>/dev/null || printf '000'
+    curl -s -m 10 -H "Host: $PREFIX-$1.$DOMAIN" "http://127.0.0.1:$PORT$2" 2>/dev/null || true
   }
-  for svc in n8n db selftest; do
-    code=000
+  wait_marker() {
+    local svc="$1" path="$2" marker="$3" body=""
     for _ in $(seq 1 90); do
-      code="$(probe "$svc")"
-      case "$code" in 200|301|302) break ;; esac
+      body="$(probe "$svc" "$path")"
+      case "$body" in *"$marker"*) ok "-$svc repond via Caddy ($path contient $marker)"; return 0 ;; esac
       sleep 2
     done
-    case "$code" in
-      200|301|302) ok "-$svc repond via Caddy ($code)" ;;
-      *) fail "-$svc ne repond pas via Caddy ($code)" ;;
-    esac
-  done
+    fail "-$svc ne repond pas via Caddy ($path, corps : '${body:0:80}')"
+  }
+  wait_marker n8n /healthz '"status":"ok"'
+  wait_marker db /api/v1/health '"message":"OK"'
   # Fichier de sites.d/ reellement servi (pas seulement valide)
-  body="$(curl -s -H "Host: $PREFIX-selftest.$DOMAIN" "http://127.0.0.1:$PORT/" 2>/dev/null || true)"
-  if [ "$body" = "selftest" ]; then ok "sites.d/selftest.caddy servi (corps verifie)"; else fail "sites.d/selftest.caddy non servi (corps : '$body')"; fi
+  wait_marker selftest / selftest
+  # Host inconnu : aujourd'hui 200 et corps vide (limite connue ; l'attrape-tout 404 vient avec un lot suivant)
+  unknown="$(curl -s -m 10 -o /dev/null -w '%{http_code} %{size_download}' -H "Host: nope.$DOMAIN" "http://127.0.0.1:$PORT/" 2>/dev/null || printf '000 0')"
+  printf '  INFO  Host inconnu -> %s (code et octets ; pas encore un 404)\n' "$unknown"
   spark_compose -p "$PROJECT" ps --format 'table {{.Name}}\t{{.Image}}\t{{.Status}}' 2>/dev/null | sed 's/^/        /' || true
 fi
 

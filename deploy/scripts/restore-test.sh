@@ -8,12 +8,14 @@
 #   2. y rejoue le dump avec ON_ERROR_STOP=0 et compte les ERROR (seule « role "postgres"
 #      already exists » est attendue) ;
 #   3. verifie la presence des bases n8n et nocodb, compte les tables et les migrations n8n ;
-#   4. demarre un n8n jetable (meme image) sur la copie, avec la N8N_ENCRYPTION_KEY du .env, et
-#      exporte les identifiants dechiffres : au moins un doit se dechiffrer. Seuls des COMPTES
-#      sont affiches, jamais le contenu ;
+#   4. compte les identifiants n8n dans la copie (SQL). S'il y en a, demarre un n8n jetable (meme
+#      image) sur la copie, avec la N8N_ENCRYPTION_KEY du .env, et exporte les identifiants
+#      dechiffres : au moins un doit se dechiffrer. Seuls des COMPTES sont affiches, jamais le contenu.
+#      Base sans identifiant : AVERTISSEMENT et succes (avant le premier acces n8n, il n'y a rien a
+#      dechiffrer), sauf si RESTORE_TEST_REQUIRE_CREDENTIAL=1 (variable d'environnement ou .env),
+#      a poser en production des qu'un identifiant n8n existe : l'absence devient alors fatale ;
 #   5. supprime tout (conteneurs, reseau), ecrit infra/backups/RESTORE_TEST_OK (horodatage).
 # Sortie 0 si tout passe, 2 sinon (alerte vers SPARK_ALERT_WEBHOOK si defini).
-# RESTORE_TEST_REQUIRE_CREDENTIAL=1 rend l'absence d'identifiant n8n fatale (base vide = avertissement sinon).
 # Ne touche jamais a la stack en production : tout se passe dans des conteneurs et un reseau dedies.
 set -euo pipefail
 
@@ -24,7 +26,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 INFRA_DIR="$(spark_infra_dir "$SCRIPT_DIR")"
 cd "$INFRA_DIR"
+# La variable posee sur la ligne de commande l'emporte sur celle du .env (charge avec set -a).
+require_credential="${RESTORE_TEST_REQUIRE_CREDENTIAL:-}"
 spark_load_env ./.env N8N_DB_PASSWORD N8N_ENCRYPTION_KEY
+require_credential="${require_credential:-${RESTORE_TEST_REQUIRE_CREDENTIAL:-0}}"
 BACKUP_DIR="${SPARK_BACKUP_DIR:-$INFRA_DIR/backups}"
 
 dump="${1:-}"
@@ -91,27 +96,33 @@ if [ "$n8n_tables" -le 0 ] || [ "$n8n_migrations" -le 0 ]; then spark_die "base 
 spark_log "bases : $dbs ; n8n : $n8n_tables tables, $n8n_migrations migrations"
 
 # 4. Dechiffrement d'un identifiant n8n ---------------------------------------------------
-# --entrypoint sh : l'entrypoint de l'image prefixe tout argument par `n8n`. Le fichier exporte
-# reste dans le conteneur ephemere ; seul node en lit le nombre d'entrees.
-counts="$(docker run --rm --network "$NET" --entrypoint sh \
-  -e DB_TYPE=postgresdb -e DB_POSTGRESDB_HOST="$PG" -e DB_POSTGRESDB_PORT=5432 \
-  -e DB_POSTGRESDB_DATABASE=n8n -e DB_POSTGRESDB_USER=n8n -e DB_POSTGRESDB_PASSWORD="$N8N_DB_PASSWORD" \
-  -e N8N_ENCRYPTION_KEY="$N8N_ENCRYPTION_KEY" -e N8N_DIAGNOSTICS_ENABLED=false \
-  -e N8N_LOG_LEVEL=error \
-  "$N8N_IMAGE" -c '
-    n8n export:credentials --all --decrypted --output=/tmp/creds.json >/tmp/n8n.log 2>&1 \
-      || { tail -5 /tmp/n8n.log >&2; exit 3; }
-    node -e "const c=require(\"/tmp/creds.json\");
-      const ok=c.filter(x=>x.data&&typeof x.data===\"object\"&&Object.keys(x.data).length>0).length;
-      console.log(c.length+\" \"+ok)"
-  ')" || spark_die "n8n n'a pas pu exporter les identifiants (cle N8N_ENCRYPTION_KEY ou base)"
-total="${counts%% *}"; decrypted="${counts##* }"
-if [ "$total" -eq 0 ]; then
-  if [ "${RESTORE_TEST_REQUIRE_CREDENTIAL:-0}" = "1" ]; then
-    spark_die "aucun identifiant n8n dans la base : le controle de dechiffrement n'a rien a verifier"
+# Compte SQL d'abord : `n8n export:credentials` sort en erreur (« No credentials found ») sur une
+# base sans identifiant, ce qui n'est pas un defaut de la sauvegarde. Le compte decide.
+cred_total="$(psql_q n8n "SELECT count(*) FROM credentials_entity")"
+case "$cred_total" in ''|*[!0-9]*) spark_die "compte des identifiants n8n illisible (« $cred_total »)" ;; esac
+if [ "$cred_total" -eq 0 ]; then
+  if [ "$require_credential" = "1" ]; then
+    spark_die "aucun identifiant n8n dans la base (RESTORE_TEST_REQUIRE_CREDENTIAL=1) : le controle de dechiffrement n'a rien a verifier"
   fi
-  spark_log "AVERTISSEMENT : aucun identifiant n8n dans la base, dechiffrement non verifie (creer un identifiant de test)"
+  spark_log "AVERTISSEMENT : aucun identifiant n8n dans la base, dechiffrement non verifie (creer un identifiant dans n8n, puis poser RESTORE_TEST_REQUIRE_CREDENTIAL=1)"
 else
+  # --entrypoint sh : l'entrypoint de l'image prefixe tout argument par `n8n`. Le fichier exporte
+  # reste dans le conteneur ephemere ; seul node en lit le nombre d'entrees. Les secrets passent
+  # par `-e NOM` sans valeur (lus dans l'environnement, jamais sur la ligne de commande).
+  counts="$(DB_POSTGRESDB_PASSWORD="$N8N_DB_PASSWORD" docker run --rm --network "$NET" --entrypoint sh \
+    -e DB_TYPE=postgresdb -e DB_POSTGRESDB_HOST="$PG" -e DB_POSTGRESDB_PORT=5432 \
+    -e DB_POSTGRESDB_DATABASE=n8n -e DB_POSTGRESDB_USER=n8n \
+    -e DB_POSTGRESDB_PASSWORD -e N8N_ENCRYPTION_KEY \
+    -e N8N_DIAGNOSTICS_ENABLED=false -e N8N_LOG_LEVEL=error \
+    "$N8N_IMAGE" -c '
+      n8n export:credentials --all --decrypted --output=/tmp/creds.json >/tmp/n8n.log 2>&1 \
+        || { tail -5 /tmp/n8n.log >&2; exit 3; }
+      node -e "const c=require(\"/tmp/creds.json\");
+        const ok=c.filter(x=>x.data&&typeof x.data===\"object\"&&Object.keys(x.data).length>0).length;
+        console.log(c.length+\" \"+ok)"
+    ')" || spark_die "n8n n'a pas pu exporter les $cred_total identifiant(s) (cle N8N_ENCRYPTION_KEY ou base)"
+  total="${counts%% *}"; decrypted="${counts##* }"
+  [ "$total" -eq "$cred_total" ] || spark_die "$cred_total identifiant(s) en base, $total exporte(s)"
   [ "$decrypted" -ge 1 ] || spark_die "$total identifiant(s), aucun dechiffre"
   spark_log "identifiants n8n : $total exporte(s), $decrypted dechiffre(s)"
 fi

@@ -3,34 +3,34 @@
 # repertoire infra/config/caddy sur /etc/caddy.
 # Validation avant tout reload : docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile
 {
-    auto_https off
+	auto_https off
 }
 
 # `header_up X-Forwarded-Proto https` est obligatoire : Caddy recoit du HTTP depuis
 # cloudflared, mais n8n doit croire qu'il est en HTTPS (sinon il refuse les cookies securises).
 
 http://{$SPARK_PREFIX}-n8n.{$SPARK_DOMAIN} {
-    reverse_proxy n8n:5678 {
-        header_up X-Forwarded-Proto https
-    }
+	reverse_proxy n8n:5678 {
+		header_up X-Forwarded-Proto https
+	}
 }
 
 http://{$SPARK_PREFIX}-app.{$SPARK_DOMAIN} {
-    handle /apps/* {
-        root * /srv
-        file_server
-    }
-    handle {
-        reverse_proxy n8n:5678 {
-            header_up X-Forwarded-Proto https
-        }
-    }
+	handle /apps/* {
+		root * /srv
+		file_server
+	}
+	handle {
+		reverse_proxy n8n:5678 {
+			header_up X-Forwarded-Proto https
+		}
+	}
 }
 
 http://{$SPARK_PREFIX}-db.{$SPARK_DOMAIN} {
-    reverse_proxy nocodb:8080 {
-        header_up X-Forwarded-Proto https
-    }
+	reverse_proxy nocodb:8080 {
+		header_up X-Forwarded-Proto https
+	}
 }
 
 # Vhosts additionnels propres au site : un fichier *.caddy par vhost dans sites.d/.

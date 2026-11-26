@@ -11,8 +11,9 @@ User=spark
 Group=spark
 WorkingDirectory=/opt/spark/infra
 # Echec explicite sans .env : jamais de faux vert « stack demarree » sur une config absente.
-ExecStartPre=/usr/bin/test -f /opt/spark/infra/.env
-ExecStartPre=/usr/bin/test -f /opt/spark/infra/compose.yml
+# Le fichier manquant est nomme dans le journal (journalctl -u spark-compose.service).
+ExecStartPre=/bin/sh -c 'test -f /opt/spark/infra/.env || { echo "/opt/spark/infra/.env absent" >&2; exit 1; }'
+ExecStartPre=/bin/sh -c 'test -f /opt/spark/infra/compose.yml || { echo "/opt/spark/infra/compose.yml absent" >&2; exit 1; }'
 ExecStart=/usr/bin/docker compose up -d --remove-orphans
 ExecStop=/usr/bin/docker compose down
 TimeoutStartSec=120

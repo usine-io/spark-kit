@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# deploy/scripts/pin-digests.sh — fige chaque `image:` d'un compose par tag ET digest.
+# deploy/scripts/pin-digests.sh — fige chaque image d'un fichier par tag ET digest.
 #
-# Usage : pin-digests.sh [--check] [compose.yml]
+# Usage : pin-digests.sh [--check] [fichier]        (defaut : deploy/compose.yml)
+#   Lignes reconnues : `image: <ref>` (compose) et `<NOM>_IMAGE="<ref>"` (scripts, ex. mcp-n8n.sh).
 #   sans option : pour chaque image, `docker pull <repo:tag>`, releve du digest servi par le tag,
-#                 reecriture `image: <repo:tag>@sha256:...` EN PLACE (meme inode), diff affiche.
+#                 reecriture `<repo:tag>@sha256:...` EN PLACE (meme inode), diff affiche.
 #   --check     : ne modifie rien ; sortie 1 si un digest du fichier differe de celui que le tag
 #                 sert aujourd'hui (derive detectee), 0 sinon.
 #
 # Le digest releve est celui de l'index multi-architecture resolu par le tag (RepoDigests) :
 # il vaut pour amd64 et arm64. Montee de version = changer le tag dans le compose, puis relancer.
+# Une image sans tag explicite (`repo` ou `repo@sha256:...`) ou en `:latest` est refusee (code 2) :
+# le compose doit dire quelle version il fige.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,11 +45,17 @@ trap 'rm -f "$tmp"' EXIT
 
 drift=0
 while IFS= read -r line || [ -n "$line" ]; do
-  if [[ "$line" =~ ^([[:space:]]*image:[[:space:]]*)([^[:space:]#]+)(.*)$ ]]; then
+  # `image: <ref>` (compose) ou `<NOM>_IMAGE="<ref>"` (scripts) ; guillemets optionnels.
+  if [[ "$line" =~ ^([[:space:]]*(image:[[:space:]]*|[A-Z][A-Z0-9_]*_IMAGE=)[\"\']?)([^[:space:]#\"\']+)(.*)$ ]]; then
     prefix="${BASH_REMATCH[1]}"
-    ref="${BASH_REMATCH[2]}"
-    rest="${BASH_REMATCH[3]}"
+    ref="${BASH_REMATCH[3]}"
+    rest="${BASH_REMATCH[4]}"
     base="${ref%%@*}"
+    case "${base##*/}" in
+      *:latest) printf 'image en :latest refusee : %s (ecrire repo:<version>)\n' "$base" >&2; exit 2 ;;
+      *:*) ;;
+      *) printf 'image sans tag refusee : %s (ecrire repo:<version>, jamais :latest implicite)\n' "$base" >&2; exit 2 ;;
+    esac
     current="${ref#*@}"
     [ "$current" = "$ref" ] && current=""
     served="$(digest_for "$base")"
