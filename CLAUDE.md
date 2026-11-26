@@ -21,7 +21,19 @@ Ne pas recreer ici une copie du briefing : elle redivergerait. Toute amelioratio
 | `SECURITY.md` | Standard de durcissement, modele de menace, audit recurrent |
 | `INCIDENTS.md` | Incidents transverses (`INC-NN`, numerotes dans l'ordre chronologique, sans date) |
 | `ROADMAP.md` | Roadmap du kit |
-| `deploy/` | Fichiers de deploiement Linux (systemd, env.example) |
+| `CHANGELOG.md` | Une entree par lot de mise a jour du kit |
+| `deploy/` | **Source unique de l'infra** : `compose.yml`, `env.example`, `config/caddy/`, `config/postgres/`, `scripts/`, `linux/systemd/` |
+
+## Infra : une seule source
+
+L'infra (compose, Caddyfile, init-db, env.example, scripts, units systemd) vit **une seule fois** dans `deploy/`. Les guides `INSTALL.md` et `INSTALL-LINUX.md` la **copient** (`cp`, `cp -R`) dans l'arborescence `infra/` du site ; ils ne la recopient jamais en heredoc. Toute modification d'infra se fait dans `deploy/`, puis :
+
+- `deploy/scripts/selftest-install.sh --up` (rejoue les copies des guides, `docker compose config`, `caddy validate`, `up`, sondes, `down -v`) ;
+- `deploy/scripts/pin-digests.sh --check deploy/compose.yml` (les digests du compose sont ceux que les tags servent) ;
+- `shellcheck -x deploy/scripts/*.sh deploy/config/postgres/init-db.sh` ;
+- relire les guides pour que chaque chemin cite existe dans `deploy/`.
+
+Les images sont figees par tag **et** digest ; jamais `:latest`. Une montee de version = changement de tag volontaire + `pin-digests.sh` + entree dans `CHANGELOG.md`.
 
 ## Depot public : anonymisation
 

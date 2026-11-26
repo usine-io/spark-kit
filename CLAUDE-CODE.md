@@ -29,10 +29,11 @@ Pour NocoDB, **pas de MCP** : l'agent passe par le CLI `nocodb.sh` de la skill `
 
 ### Creer le script wrapper
 
-**`scripts/mcp-n8n.sh`** — connecte Claude Code a n8n via le reseau Docker :
+**`infra/scripts/mcp-n8n.sh`** — connecte Claude Code a n8n via le reseau Docker (meme chemin que dans `.mcp.json` ci-dessous ; a creer depuis `~/spark/`) :
 
 ```bash
-cat > scripts/mcp-n8n.sh <<'MCP'
+cd ~/spark
+cat > infra/scripts/mcp-n8n.sh <<'MCP'
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -48,10 +49,10 @@ exec docker run -i --rm \
   -e WEBHOOK_SECURITY_MODE=permissive \
   ghcr.io/czlonkowski/n8n-mcp:latest
 MCP
-chmod +x scripts/mcp-n8n.sh
+chmod +x infra/scripts/mcp-n8n.sh
 ```
 
-> Le reseau `spark_spark` correspond au projet compose `spark` + le reseau `spark`. Si vous avez change le `name:` dans le compose, adaptez en consequence.
+> Le reseau `spark_spark` correspond au projet compose `spark` (`name:` dans `infra/compose.yml`) + le reseau `spark`. Si vous avez change le `name:`, adaptez en consequence.
 
 ### Creer .mcp.json
 
@@ -100,7 +101,7 @@ Le CLI cible `/api/v3/...` avec le header `xc-token`, lit le token via env, ne l
 
 | Outil | Type | Ce qu'il fait | Ou il vit |
 |-------|------|---------------|-----------|
-| [`n8n-mcp`](https://github.com/czlonkowski/n8n-mcp) | MCP server | Lire/ecrire workflows, activer, executer | scripts/mcp-n8n.sh (lance a la demande via `docker run`) |
+| [`n8n-mcp`](https://github.com/czlonkowski/n8n-mcp) | MCP server | Lire/ecrire workflows, activer, executer | infra/scripts/mcp-n8n.sh (lance a la demande via `docker run`) |
 | `nocodb.sh` (skill `nocodb`) | CLI v3 | Lire/ecrire records, schema, tables via API v3 | ~/.claude/skills/nocodb/scripts/ |
 | `n8n-*` skills (x7) | Reference | Config nodes, patterns workflow, expressions, code JS/Python, validation | fournies par le MCP n8n |
 | `nocodb` skill | Reference | API v3 complete, filtres `where`, CLI bash | ~/.claude/skills/nocodb/ |

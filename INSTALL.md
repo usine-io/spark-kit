@@ -1,6 +1,8 @@
-# Installation Spark — Guide pas a pas
+# Installation Spark sur Mac — Guide pas a pas
 
 > Ce guide part d'un Mac Mini vierge et aboutit a une stack Spark operationnelle en HTTPS. Temps total : ~35 minutes.
+>
+> **Ce guide installe un bac a sable.** Docker sur macOS tourne dans une machine virtuelle (Colima) : la latence est d'un ordre de grandeur plus elevee qu'en natif et la stack s'effondre sous charge (voir `INCIDENTS.md`). C'est le bon outil pour prototyper, former et tester. **Pour la production, suivre [INSTALL-LINUX.md](INSTALL-LINUX.md).** Les deux parcours posent la **meme stack**, depuis les **memes fichiers** du kit (`deploy/`).
 
 Retour au [README](README.md) pour le contexte et l'architecture. Apres l'installation, configurer Claude Code avec [CLAUDE-CODE.md](CLAUDE-CODE.md).
 
@@ -48,19 +50,31 @@ echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
 eval "$(/opt/homebrew/bin/brew shellenv)"
 
 # Paquets essentiels
-brew install colima docker docker-compose cloudflared git gh jq curl tmux mole node
-# Note : avec Colima, la commande disponible est `docker-compose` (tiret, plugin v1).
-# La sous-commande `docker compose` (sans tiret, v2 integree au CLI Docker Desktop)
-# n'est PAS disponible. Tout le guide utilise `docker-compose`.
+brew install colima docker docker-compose cloudflared age git gh jq curl tmux mole node
 
 # Tailscale — VPN mesh pour acces distant securise au Mac
 brew install --cask tailscale
 # Ouvrir Tailscale.app et s'authentifier une premiere fois
 ```
 
+Noter les versions installees dans le runbook du site (`colima version`, `docker --version`, `docker-compose version`, `cloudflared --version`) : le Mac n'epingle pas ses paquets, le runbook s'en charge.
+
+**`docker compose` ou `docker-compose` ?** Homebrew installe Compose (v2 ou superieure) sous la forme du binaire `docker-compose`. Pour que la sous-commande `docker compose` (celle qu'utilisent les guides et les scripts du kit) le trouve, declarer le repertoire des plugins dans `~/.docker/config.json` :
+
 ```bash
-# Demarrer Colima
-colima start --cpu 4 --memory 3 --disk 60 --network-address --vm-type vz
+mkdir -p ~/.docker
+[ -f ~/.docker/config.json ] || echo '{}' > ~/.docker/config.json
+jq '.cliPluginsExtraDirs = ["/opt/homebrew/lib/docker/cli-plugins"]' ~/.docker/config.json > ~/.docker/config.json.tmp \
+  && mv ~/.docker/config.json.tmp ~/.docker/config.json
+docker compose version
+```
+
+> **Repli** : si `docker compose` n'est pas reconnu, `docker-compose` (avec un tiret) fonctionne a l'identique sur le fichier `compose.yml` du kit. Les scripts du kit essaient `docker compose` puis `docker-compose` automatiquement.
+
+```bash
+# Demarrer Colima : 4 CPU / 4 Go minimum (la stack pose des plafonds memoire : n8n 1 Go, NocoDB 900 Mo).
+# Sur un Mac 16 Go : --memory 6
+colima start --cpu 4 --memory 4 --disk 60 --network-address --vm-type vz
 
 # Verifier que Docker repond
 docker info
@@ -88,7 +102,7 @@ cat > ~/Library/LaunchAgents/com.spark.colima.plist <<PLIST
         <string>--cpu</string>
         <string>4</string>
         <string>--memory</string>
-        <string>3</string>
+        <string>4</string>
         <string>--disk</string>
         <string>60</string>
         <string>--network-address</string>
@@ -116,217 +130,88 @@ launchctl load ~/Library/LaunchAgents/com.spark.colima.plist
 
 ## Etape 2 — Configurer le site
 
-Tout au long de cette etape, remplacer `acme` par le slug de l'entreprise et `example.com` par le domaine reel.
+Tout au long de cette etape, remplacer `acme` par le slug de l'entreprise et `acme.example` par le domaine reel.
 
-### Creer l'arborescence
+**Source unique.** Les fichiers d'infrastructure (compose, Caddyfile, script d'initialisation Postgres, gabarit `.env`, scripts) vivent **une seule fois** dans le depot du kit, sous [`deploy/`](deploy/). Cette etape les **copie** dans `~/spark/infra/` ; rien n'est recopie a la main.
+
+### Cloner le kit et creer l'arborescence
 
 ```bash
-mkdir -p ~/spark/{infra/{config/postgres,apps,logs,backups,scripts},discovery}
+mkdir -p ~/spark/{infra/{apps,logs,backups,scripts},discovery}
+git clone https://github.com/spark-kit/spark-kit.git ~/spark/spark-kit
 git clone https://github.com/spark-kit/templates.git ~/spark/templates
 cd ~/spark/infra
 ```
 
-Le repo `templates` contient la methodologie, les scripts de setup avances (securite, backup), les skills Claude Code et le smoke test. Toute la suite de l'installation travaille dans `~/spark/infra/`.
+`~/spark/spark-kit` est le kit (ce depot : fichiers d'infra dans `deploy/`, guides). Le repo `templates` contient la methodologie, les skills Claude Code et le smoke test. Toute la suite de l'installation travaille dans `~/spark/infra/`.
 
-### Generer les secrets
-
-Alphabet URL-safe uniquement — ne jamais utiliser `base64` qui produit des `+/=` incompatibles avec certaines configs :
+### Copier les fichiers d'infra depuis le kit
 
 ```bash
-gen_secret() { LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom | head -c "$1"; }
-
-cat > .env <<EOF
-# --- Site ---
-SPARK_PREFIX=acme
-SPARK_DOMAIN=example.com
-SPARK_HOST_HTTP_PORT=18080
-
-# --- PostgreSQL ---
-POSTGRES_ROOT_PASSWORD=$(gen_secret 32)
-N8N_DB_PASSWORD=$(gen_secret 32)
-NOCODB_DB_PASSWORD=$(gen_secret 32)
-
-# --- n8n ---
-N8N_ENCRYPTION_KEY=$(openssl rand -hex 32)
-
-# --- NocoDB ---
-NC_AUTH_JWT_SECRET=$(openssl rand -hex 32)
-
-# --- Cloudflare Tunnel (a remplir a l'etape 4) ---
-SPARK_TUNNEL_ID=
-SPARK_TUNNEL_CONFIG=
-CF_API_TOKEN=
-CF_ZONE_ID=
-
-# --- MCP / outillage agent (a remplir apres premier acces) ---
-N8N_API_KEY=
-NOCODB_API_TOKEN=
-N8N_MCP_AUTH_TOKEN=$(gen_secret 32)
-EOF
-
-chmod 600 .env
+cp ~/spark/spark-kit/deploy/compose.yml ~/spark/infra/compose.yml
+cp ~/spark/spark-kit/deploy/env.example ~/spark/infra/env.example
+cp -R ~/spark/spark-kit/deploy/config ~/spark/infra/
+chmod +x ~/spark/infra/config/postgres/init-db.sh
+cp ~/spark/spark-kit/deploy/scripts/*.sh ~/spark/infra/scripts/
+chmod +x ~/spark/infra/scripts/*.sh
 ```
 
-### Creer les fichiers de config
+Ce que ces copies posent :
 
-**`infra/config/postgres/init-db.sh`** — cree les bases et les utilisateurs separes :
+| Fichier dans `infra/` | Role |
+|---|---|
+| `compose.yml` | La stack (Postgres, n8n, NocoDB, Caddy), images figees par tag **et** digest |
+| `env.example` | Gabarit du `.env` (toute variable lue par le compose y figure) |
+| `config/postgres/init-db.sh` | Cree les bases et utilisateurs separes (`n8n`, `nocodb`) au premier demarrage |
+| `config/caddy/Caddyfile` | Reverse proxy interne (3 vhosts), pas de TLS (Cloudflare s'en charge) |
+| `config/caddy/sites.d/` | Vhosts additionnels du site, un fichier `.caddy` par vhost (vide au depart) |
+| `scripts/init-env.sh` | Cree le `.env` avec des secrets URL-safe |
+| `scripts/backup.sh`, `scripts/restore-test.sh` | Sauvegarde et test de restauration (voir « Aller plus loin ») |
+| `scripts/pin-digests.sh` | Releve ou controle les digests des images |
+| `scripts/selftest-install.sh` | Rejoue cette etape dans un repertoire temporaire pour verifier le kit |
+
+Verifier que chaque fichier monte par le compose existe bien (un fichier absent serait remplace par un repertoire vide au demarrage, sans erreur) :
 
 ```bash
-cat > config/postgres/init-db.sh <<'INITDB'
-#!/bin/bash
-set -euo pipefail
-psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<-EOSQL
-    CREATE USER n8n WITH ENCRYPTED PASSWORD '${N8N_DB_PASSWORD}';
-    CREATE DATABASE n8n OWNER n8n;
-
-    CREATE USER nocodb WITH ENCRYPTED PASSWORD '${NOCODB_DB_PASSWORD}';
-    CREATE DATABASE nocodb OWNER nocodb;
-EOSQL
-INITDB
-chmod +x config/postgres/init-db.sh
+cd ~/spark/infra
+for f in compose.yml env.example config/postgres/init-db.sh config/caddy/Caddyfile config/caddy/sites.d/.keep; do
+  [ -f "$f" ] && echo "OK   $f" || echo "FAIL $f"
+done
 ```
 
-**`infra/config/Caddyfile`** — reverse proxy interne, pas de TLS (Cloudflare s'en charge) :
+### Generer le .env
 
 ```bash
-cat > config/Caddyfile <<'CADDY'
-{
-    auto_https off
-}
-
-http://{$SPARK_PREFIX}-n8n.{$SPARK_DOMAIN} {
-    reverse_proxy n8n:5678 {
-        header_up X-Forwarded-Proto https
-    }
-}
-
-http://{$SPARK_PREFIX}-app.{$SPARK_DOMAIN} {
-    handle /apps/* {
-        root * /srv
-        file_server
-    }
-    handle {
-        reverse_proxy n8n:5678 {
-            header_up X-Forwarded-Proto https
-        }
-    }
-}
-
-http://{$SPARK_PREFIX}-db.{$SPARK_DOMAIN} {
-    reverse_proxy nocodb:8080 {
-        header_up X-Forwarded-Proto https
-    }
-}
-CADDY
+~/spark/infra/scripts/init-env.sh --prefix acme --domain acme.example ~/spark/infra/.env
 ```
 
-> `header_up X-Forwarded-Proto https` est obligatoire : Caddy recoit du HTTP depuis cloudflared, mais les apps doivent croire qu'elles sont en HTTPS (sinon n8n refuse les cookies securises).
+> Le script copie `env.example`, renseigne le site et genere les 5 secrets d'infrastructure (alphabet URL-safe `A-Za-z0-9` : jamais `base64`, qui produit des `+/=` incompatibles avec certaines configs). Le fichier est cree en `600`. Les champs tunnel, sauvegarde et cles API restent vides : ils sont remplis plus loin.
 
-> **Pas de Dockerfile MCP NocoDB.** L'agent acces a NocoDB via son API v3 (PAT) en passant par le CLI bundle dans la skill `nocodb` — pas via un serveur MCP. Raison : l'ecosysteme MCP NocoDB n'est pas stable contre NocoDB 2026.04.5+ (les packages disponibles ciblent v1/v2 qui rejettent les PAT). Cf. INC-02 dans `INCIDENTS.md`.
-
-### Creer le docker-compose.yml
+Verifier la configuration, sans afficher les secrets :
 
 ```bash
-cat > docker-compose.yml <<'COMPOSE'
-name: spark
-
-services:
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    networks: [spark]
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_ROOT_PASSWORD}
-      POSTGRES_DB: postgres
-      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD}
-      NOCODB_DB_PASSWORD: ${NOCODB_DB_PASSWORD}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./config/postgres/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  n8n:
-    image: n8nio/n8n:2.19.4
-    restart: unless-stopped
-    networks: [spark]
-    depends_on:
-      postgres: { condition: service_healthy }
-    environment:
-      DB_TYPE: postgresdb
-      DB_POSTGRESDB_HOST: postgres
-      DB_POSTGRESDB_PORT: 5432
-      DB_POSTGRESDB_DATABASE: n8n
-      DB_POSTGRESDB_USER: n8n
-      DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD}
-      N8N_HOST: ${SPARK_PREFIX}-n8n.${SPARK_DOMAIN}
-      N8N_PORT: 5678
-      N8N_PROTOCOL: https
-      N8N_EDITOR_BASE_URL: https://${SPARK_PREFIX}-n8n.${SPARK_DOMAIN}/
-      WEBHOOK_URL: https://${SPARK_PREFIX}-app.${SPARK_DOMAIN}/
-      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
-      N8N_DIAGNOSTICS_ENABLED: "false"
-      N8N_PERSONALIZATION_ENABLED: "false"
-      N8N_USER_MANAGEMENT_DISABLED: "false"
-      NODE_ENV: production
-      GENERIC_TIMEZONE: Europe/Paris
-      TZ: Europe/Paris
-    volumes:
-      - n8n_data:/home/node/.n8n
-
-  nocodb:
-    image: nocodb/nocodb:latest
-    restart: unless-stopped
-    networks: [spark]
-    depends_on:
-      postgres: { condition: service_healthy }
-    environment:
-      NC_DB_JSON: '{"client":"pg","connection":{"host":"postgres","port":5432,"user":"nocodb","password":"${NOCODB_DB_PASSWORD}","database":"nocodb"}}'
-      NC_AUTH_JWT_SECRET: ${NC_AUTH_JWT_SECRET}
-      NC_PUBLIC_URL: https://${SPARK_PREFIX}-db.${SPARK_DOMAIN}
-    volumes:
-      - nocodb_data:/usr/app/data
-
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    networks: [spark]
-    ports:
-      - "127.0.0.1:${SPARK_HOST_HTTP_PORT:-18080}:80"
-    environment:
-      SPARK_DOMAIN: ${SPARK_DOMAIN}
-      SPARK_PREFIX: ${SPARK_PREFIX}
-    volumes:
-      - ./config/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./apps:/srv/apps:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - n8n
-      - nocodb
-
-volumes:
-  postgres_data:
-  n8n_data:
-  nocodb_data:
-  caddy_data:
-  caddy_config:
-
-networks:
-  spark:
-    driver: bridge
-COMPOSE
+cd ~/spark/infra
+docker compose config --quiet && echo "compose: OK"
+grep -c '^[A-Z0-9_]*=.' .env
 ```
 
-Points cles :
+`docker compose config` ne doit afficher **aucun** avertissement `variable is not set` ; le `grep` compte les variables renseignees (9 attendues a ce stade).
+
+> `header_up X-Forwarded-Proto https` dans le Caddyfile est obligatoire : Caddy recoit du HTTP depuis cloudflared, mais les apps doivent croire qu'elles sont en HTTPS (sinon n8n refuse les cookies securises).
+
+> **Pas de Dockerfile MCP NocoDB.** L'agent accede a NocoDB via son API v3 (PAT) en passant par le CLI bundle dans la skill `nocodb` — pas via un serveur MCP. Raison : l'ecosysteme MCP NocoDB n'est pas stable contre NocoDB 2026.04.5+ (les packages disponibles ciblent v1/v2 qui rejettent les PAT). Cf. INC-2026-05-19 dans `INCIDENTS.md`.
+
+### Points cles du compose
+
+Le `compose.yml` est commente ; l'essentiel :
+
 - Caddy ecoute sur `127.0.0.1:18080` — pas accessible depuis le reseau, uniquement via cloudflared
-- PostgreSQL cree des **utilisateurs separes** (n8n, nocodb) avec des mots de passe distincts
+- PostgreSQL cree des **utilisateurs separes** (n8n, nocodb) avec des mots de passe distincts ; `init-db.sh` ne rejoue jamais sur un volume existant
 - NocoDB utilise `NC_DB_JSON` (objet) et non `NC_DB` (URL) — evite les crashloops si le password contient des caracteres speciaux
-- Le MCP n8n n'est **pas** dans le compose — il est lance a la demande par Claude Code via `scripts/mcp-n8n.sh` (voir [CLAUDE-CODE.md](CLAUDE-CODE.md)). Ca economise ~512 Mo de RAM permanente.
+- **Toutes les images sont figees par tag et digest** (jamais `:latest`) : un `pull` surprise = migration de schema sans retour arriere, et une restauration de sauvegarde exige la meme version que la source. Monter une version = modifier le tag dans `compose.yml` volontairement, puis `scripts/pin-digests.sh compose.yml`
+- **`mem_limit` sur n8n (1 Go) et NocoDB (900 Mo)** : sans plafond, une rafale d'imports peut pousser un service a evincer les autres. D'ou la VM Colima a 4 Go minimum
+- Le MCP n8n n'est **pas** dans le compose — il est lance a la demande par Claude Code via `infra/scripts/mcp-n8n.sh` (voir [CLAUDE-CODE.md](CLAUDE-CODE.md)). Ca economise ~512 Mo de RAM permanente
+- Le repertoire `config/caddy/` est monte en entier : on peut remplacer le Caddyfile ou poser un fichier dans `sites.d/` puis `caddy reload`, sans redemarrer le conteneur
 
 ---
 
@@ -334,18 +219,19 @@ Points cles :
 
 ```bash
 cd ~/spark/infra
-docker-compose up -d
+docker compose up -d
 ```
 
-Verifier que les services repondent via Caddy (attendre ~15s) :
+Verifier que les services repondent via Caddy (attendre ~30 s) :
 
 ```bash
-source .env
+cd ~/spark/infra && set -a && . ./.env && set +a
 for svc in n8n db; do
   host="${SPARK_PREFIX}-${svc}.${SPARK_DOMAIN}"
   code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: $host" "http://localhost:${SPARK_HOST_HTTP_PORT:-18080}" 2>/dev/null || echo "000")
   printf "  %-15s %s\n" "$svc" "$([[ $code =~ ^(200|301|302)$ ]] && echo 'OK' || echo "FAIL ($code)")"
 done
+docker compose ps --format "table {{.Name}}\t{{.Image}}\t{{.Status}}"
 ```
 
 A ce stade, les services tournent et repondent via Caddy sur `127.0.0.1:18080`, mais ne sont pas encore accessibles depuis l'exterieur. L'etape suivante ouvre l'acces HTTPS via le tunnel.
@@ -396,27 +282,25 @@ tunnel: $TUNNEL_ID
 credentials-file: $HOME/.cloudflared/$TUNNEL_ID.json
 
 ingress:
-  - hostname: acme-n8n.example.com
+  - hostname: acme-n8n.acme.example
     service: http://localhost:18080
-  - hostname: acme-app.example.com
+  - hostname: acme-app.acme.example
     service: http://localhost:18080
-  - hostname: acme-db.example.com
+  - hostname: acme-db.acme.example
     service: http://localhost:18080
   - service: http_status:404
 EOF
 ```
 
-> Adapter les hostnames : `<prefix>-<service>.<domain>`. Le pattern single-level (`acme-n8n.example.com`) est obligatoire pour profiter du Universal SSL gratuit de CF.
+> Adapter les hostnames : `<prefix>-<service>.<domain>`. Le pattern single-level (`acme-n8n.acme.example`) est obligatoire pour profiter du Universal SSL gratuit de CF. Ce fichier est propre au site (identifiant de tunnel) : c'est le seul fichier de configuration qui ne vient pas du kit.
 
 ### 4.4 — Creer les DNS
 
 ```bash
-cloudflared tunnel route dns spark-acme acme-n8n.example.com
-cloudflared tunnel route dns spark-acme acme-app.example.com
-cloudflared tunnel route dns spark-acme acme-db.example.com
+cloudflared tunnel route dns spark-acme acme-n8n.acme.example
+cloudflared tunnel route dns spark-acme acme-app.acme.example
+cloudflared tunnel route dns spark-acme acme-db.acme.example
 ```
-
-Ou via l'API CF pour plus de controle (voir `infra/scripts/tunnel-up.sh`).
 
 ### 4.5 — Lancer cloudflared
 
@@ -471,7 +355,7 @@ Completer les variables tunnel dans `~/spark/infra/.env` :
 
 ```bash
 SPARK_TUNNEL_ID=<UUID>
-SPARK_TUNNEL_CONFIG=~/.cloudflared/config-spark.yml
+SPARK_TUNNEL_CONFIG=$HOME/.cloudflared/config-spark.yml
 CF_API_TOKEN=<token avec scope Zone:DNS:Edit>
 CF_ZONE_ID=<ID de la zone parente>
 ```
@@ -479,9 +363,9 @@ CF_ZONE_ID=<ID de la zone parente>
 ### Verifier
 
 ```bash
-curl -sI https://acme-n8n.example.com | head -5
-curl -sI https://acme-app.example.com | head -5
-curl -sI https://acme-db.example.com | head -5
+curl -sI https://acme-n8n.acme.example | head -5
+curl -sI https://acme-app.acme.example | head -5
+curl -sI https://acme-db.acme.example | head -5
 ```
 
 Les trois doivent repondre en HTTPS avec un status 200 ou 302.
@@ -497,7 +381,7 @@ sudo reboot
 Attendre ~2 min, puis se reconnecter en SSH (ou via Tailscale) et lancer la verification :
 
 ```bash
-source ~/spark/infra/.env
+cd ~/spark/infra && set -a && . ./.env && set +a
 
 echo "=== Colima ==="
 colima status && echo "OK" || echo "FAIL"
@@ -547,10 +431,10 @@ nano ~/spark/infra/.env
 #   NOCODB_API_TOKEN=<token copie>
 ```
 
-Puis relancer la stack pour que le MCP n8n prenne sa cle :
+Puis relancer la stack :
 
 ```bash
-cd ~/spark/infra && docker-compose up -d
+cd ~/spark/infra && docker compose up -d
 ```
 
 Le token NocoDB est lu depuis `.env` par le CLI au runtime (pas besoin de restart).
@@ -563,33 +447,53 @@ Les secrets des systemes metier (API keys, tokens des logiciels de l'entreprise)
 
 **→ [CLAUDE-CODE.md](CLAUDE-CODE.md)**
 
-Les sections ci-dessous (securite, backup, depannage) sont optionnelles — a consulter au besoin, pas maintenant.
+Les sections ci-dessous (securite, sauvegarde, mise a jour, depannage) sont optionnelles — a consulter au besoin, pas maintenant.
 
 ---
 
 ## Aller plus loin — durcir et sauvegarder (optionnel)
 
-La stack cœur ci-dessus est un prototype joignable. Deux briques optionnelles, **independantes l'une de l'autre**, la rendent exploitable en production. Chacune est documentee comme un "step" dans `templates/setup-skeleton/` (clone en local dans `~/spark/templates/`).
+La stack cœur ci-dessus est un prototype joignable. Deux briques optionnelles, **independantes l'une de l'autre**, la rendent exploitable — sur un Mac, pour un bac a sable qui porte des donnees qu'on ne veut pas perdre ; pour une production, c'est [INSTALL-LINUX.md](INSTALL-LINUX.md).
 
 ### Brique securite — authentification et durcissement · ~60-90 min
 
 Recommande des qu'on y met de la donnee reelle : sans elle, les pages de login n8n/NocoDB et les webhooks/ecrans exposes sont publics (devinables via certificate transparency / scan DNS).
 
-- **Couvre** : Cloudflare Access devant `-n8n`/`-app`/`-db`, headers de securite Caddy (HSTS, X-Frame...), override CORS NocoDB.
+- **Couvre** : Cloudflare Access devant `-n8n`/`-app`/`-db`, headers de securite Caddy (HSTS sans `preload`, X-Frame...), override CORS NocoDB. Les en-tetes se posent dans `~/spark/infra/config/caddy/Caddyfile` (valeurs dans [`SECURITY.md`](SECURITY.md) §2.2), puis `docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile` et `caddy reload`.
 - **Options Cloudflare a prendre** : compte **Zero Trust** activé (Free, ≤50 users) ; un **IdP** (Entra ID M365 / Google) **ou** **One-time PIN** par email (zero config) ; un **Service Token** par machine qui doit franchir Access (CLI host, callback SaaS) — rotation 90j ; (recommande) **WAF + Rate Limiting** sur la zone.
 - **Reversible a 100%** : supprimer l'application Access = retour immediat a l'etat non protege, aucun impact tunnel/DNS.
 - **Doc** : standard [`SECURITY.md`](SECURITY.md), runbook pas-a-pas [`templates/docs/cf-access.md`](https://github.com/spark-kit/templates/blob/main/docs/cf-access.md), step [`setup-skeleton/03-securite-cf-access/`](https://github.com/spark-kit/templates/tree/main/setup-skeleton/03-securite-cf-access).
 
-### Brique sauvegarde — backup 3-2-1 deployable · ~45-60 min
+### Brique sauvegarde — backup + test de restauration · ~20 min
 
-Scripts generiques (pg_dumpall + tar des volumes + **drill de restore** + planification launchd), resolus par labels Docker Compose, sans nom de client en dur.
+Les scripts sont ceux du kit, deja copies dans `~/spark/infra/scripts/` : `backup.sh` (dump `pg_dumpall` controle, tar des volumes hors Postgres, `.env` + config n8n chiffres avec `age`) et `restore-test.sh` (restauration dans un Postgres jetable de la meme image, comptes, dechiffrement d'un identifiant n8n sur la copie).
 
-- **Couches locales** (dump 6h + volumes quotidien + drill hebdo) : ~45-60 min, aucune dependance externe, testable immediatement.
-- **Couche offsite** : +~25 min, agnostique au provider — un **remote rclone au choix** (S3/MinIO, Backblaze B2, Google Drive, OneDrive, SFTP, WebDAV…), configure par l'installateur. `rclone copy` + retention par age (pas `sync`, qui casserait la retention offsite longue).
-- **Critere de validation** : la **drill de restore** passe — un backup non teste n'est pas un backup.
-- **Doc** : step [`setup-skeleton/04-strategie-backup-3-2-1/`](https://github.com/spark-kit/templates/tree/main/setup-skeleton/04-strategie-backup-3-2-1).
+```bash
+age-keygen -o ~/spark-backup.key          # copier la cle privee dans le coffre de l'entreprise, puis la supprimer d'ici
+grep '^# public key:' ~/spark-backup.key  # -> BACKUP_AGE_RECIPIENT=age1... dans ~/spark/infra/.env
+~/spark/infra/scripts/backup.sh
+~/spark/infra/scripts/restore-test.sh
+```
+
+- **Planification** : un LaunchAgent par script (toutes les 6 h pour `backup.sh`, quotidien pour `restore-test.sh`), sur le modele de `com.spark.cloudflared.plist` ci-dessus ; sur Linux, le kit livre les timers systemd (`deploy/linux/systemd/`).
+- **Couche offsite** : agnostique au provider — un **remote rclone au choix** (S3/MinIO, Backblaze B2, SFTP, WebDAV…). `rclone copy` + retention par age (pas `sync`, qui casserait la retention offsite longue). Les dumps contiennent des secrets : distant chiffre.
+- **Critere de validation** : `restore-test.sh` passe, avec au moins un identifiant n8n dechiffre — un backup non teste n'est pas un backup.
 
 > Les deux briques sont independantes : on peut poser la sauvegarde sans la securite, ou l'inverse. Les chiffrages sont des ordres de grandeur "premiere fois, a la main" (dashboard, pas IaC).
+
+---
+
+## Mettre a jour la stack depuis le kit
+
+```bash
+cd ~/spark/spark-kit && git pull --ff-only
+diff -u ~/spark/infra/compose.yml ~/spark/spark-kit/deploy/compose.yml
+diff -u ~/spark/infra/env.example ~/spark/spark-kit/deploy/env.example
+diff -ru ~/spark/infra/config ~/spark/spark-kit/deploy/config
+~/spark/infra/scripts/pin-digests.sh --check ~/spark/infra/compose.yml
+```
+
+Les seules differences attendues sont celles que le site a faites lui-meme (en-tetes de securite, fichiers `sites.d/`). Un changement de tag d'image est une **montee de version** : sauvegarde + test de restauration d'abord, puis `cp` du fichier concerne, `docker compose up -d`, verification. Pour verifier le kit lui-meme avant de l'appliquer : `~/spark/spark-kit/deploy/scripts/selftest-install.sh --up` (projet separe `spark-selftest`, port 18090, detruit a la fin).
 
 ---
 
@@ -601,7 +505,7 @@ Scripts generiques (pg_dumpall + tar des volumes + **drill de restore** + planif
 
 **Cause probable** : le mot de passe PostgreSQL contient des caracteres speciaux (`+`, `/`, `=`, `&`, `%`).
 
-**Solution** : verifier que `NC_DB_JSON` est utilise (pas `NC_DB`). Regenerer le password avec des caracteres URL-safe uniquement (`A-Za-z0-9`).
+**Solution** : verifier que `NC_DB_JSON` est utilise (pas `NC_DB`). Regenerer le password avec des caracteres URL-safe uniquement (`A-Za-z0-9`) — `init-env.sh` le fait.
 
 ### Containers en restart loop silencieux
 
@@ -616,8 +520,16 @@ docker run --rm alpine free -h
 Si `available` < 200 MB → redimensionner :
 ```bash
 colima stop
-colima start --cpu 4 --memory 4 --disk 60
+colima start --cpu 4 --memory 6 --disk 60 --network-address --vm-type vz
 ```
+
+### Un volume monte est un repertoire vide
+
+**Symptome** : Postgres demarre sans creer les bases, ou Caddy refuse de demarrer (`/etc/caddy/Caddyfile is a directory`).
+
+**Cause** : un fichier reference par le compose n'existait pas au `up` ; Docker a cree un repertoire vide a sa place.
+
+**Solution** : `docker compose down`, supprimer le repertoire fautif, refaire les copies de l'etape 2, `docker compose up -d`. Si Postgres a deja initialise un volume sans les bases : `docker compose down -v` (donnees perdues — uniquement sur une installation neuve).
 
 ### n8n affiche "secure cookie" error
 

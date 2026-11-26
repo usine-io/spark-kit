@@ -25,8 +25,8 @@
 ### Manquant
 - `scripts/spark-bootstrap.sh` (host setup automatise) — spec dans le doc archi, pas encore implemente
 - `scripts/spark-new-site.sh` (helper creation nouveau site)
-- Strategie backup (3-2-1 decrite dans le doc archi, aucun script)
-- Tests / linting `.env` / health-check post-up
+- Strategie backup : couche locale + test de restauration livres (`deploy/scripts/backup.sh`, `restore-test.sh`) ; copie hors machine (rclone) a documenter dans un runbook
+- Tests / linting `.env` : `deploy/scripts/selftest-install.sh` ; health-check post-up et watchdog restent a faire
 
 ---
 
@@ -175,3 +175,4 @@ Chantier B — la methodologie est l'os du projet. A et C s'enrichissent naturel
 | 2026-05-06 | — | Migration vers org GitHub `spark-kit`, extraction methodologie vers repo `templates` |
 | 2026-05-06 | — | Anonymisation des references au 1er site |
 | 2026-05-11 | 0 | Separation README (guide d'installation) / ROADMAP (suivi interne) |
+| 2026-11-26 | 1 | Lot 1 : infra en source unique dans `deploy/` (compose, Caddyfile, init-db, env.example, scripts, systemd), images figees par tag + digest, `backup.sh` / `restore-test.sh` + timers, guides en `cp` au lieu de heredocs — voir `CHANGELOG.md` |
