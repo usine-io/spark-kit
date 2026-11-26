@@ -4,6 +4,8 @@
 # Usage : restore-test.sh [chemin/pg_dumpall-*.sql.gz]    (defaut : le plus recent de infra/backups/)
 #
 # Un backup non teste n'est pas un backup. Le script :
+#   0. refuse un dump illisible ou tronque (derniere ligne « PostgreSQL database cluster dump
+#      complete » absente) ;
 #   1. demarre un Postgres jetable avec la MEME image (tag + digest) que celle du compose.yml
 #      (lue par `docker compose config`, la stack n'a pas besoin de tourner) ;
 #   2. y rejoue le dump avec ON_ERROR_STOP=0 et compte les ERROR (seule « role "postgres"
@@ -15,10 +17,12 @@
 #      Base sans identifiant : AVERTISSEMENT et succes (avant le premier acces n8n, il n'y a rien a
 #      dechiffrer), sauf si RESTORE_TEST_REQUIRE_CREDENTIAL=1 (variable d'environnement ou .env),
 #      a poser en production des qu'un identifiant n8n existe : l'absence devient alors fatale ;
-#   5. supprime tout (conteneurs, reseau), ecrit infra/backups/RESTORE_TEST_OK (horodatage).
-# Sortie 0 si tout passe, 2 sinon (alerte vers SPARK_ALERT_WEBHOOK si defini, avec la derniere ligne
-# ERREUR). Une seule execution a la fois (verrou backups/.lock-restore-test) : un deuxieme lancement
-# sort en code 2 avec un message clair.
+#   5. supprime tout (conteneurs ET leur volume anonyme : `docker rm -v`, reseau), ecrit
+#      infra/backups/RESTORE_TEST_OK (horodatage). Le nombre de volumes Docker est le meme avant et apres.
+# Sortie 0 si tout passe, 2 sinon : ligne ALERTE sur stderr (journal du timer) et POST a SPARK_ALERT_WEBHOOK
+# s'il est defini, avec la derniere ligne ERREUR — y compris quand le script s'arrete avant d'avoir
+# commence (.env absent, variable manquante). Une seule execution a la fois (verrou
+# backups/.lock-restore-test) : un deuxieme lancement sort en code 2 avec un message clair, sans alerter.
 # Ne touche jamais a la stack en production : tout se passe dans des conteneurs et un reseau dedies.
 set -euo pipefail
 
@@ -26,6 +30,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
+# Alerte des la premiere ERREUR (.env absent, variable manquante...) : voir SPARK_ALERT_SCRIPT dans lib.sh.
+SPARK_ALERT_SCRIPT="restore-test.sh"
 
 INFRA_DIR="$(spark_infra_dir "$SCRIPT_DIR")"
 cd "$INFRA_DIR"
@@ -52,7 +58,9 @@ status=2
 log="$(mktemp)"
 cleanup() {
   rc=$?
-  docker rm -f "$PG" >/dev/null 2>&1 || true
+  # -v : emporte le volume ANONYME que l'image postgres declare pour /var/lib/postgresql/data.
+  # Sans lui, chaque execution laissait une copie complete du cluster sur le disque.
+  docker rm -f -v "$PG" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   rm -f "$log"
   if [ "$status" -ne 0 ]; then
@@ -63,12 +71,21 @@ cleanup() {
   spark_unlock
 }
 trap cleanup EXIT
+SPARK_ALERT_TRAP=1   # a partir d'ici, c'est cleanup qui alerte (spark_die ne double pas)
 
 spark_log "dump : $dump"
+# Dump complet ? Meme controle que backup.sh : gzip lisible et derniere ligne de pg_dumpall presente.
+# Un dump tronque (coupure pendant la sauvegarde, copie partielle) est rejete avant tout rejeu.
+gzip -t "$dump" 2>/dev/null || spark_die "dump $dump illisible (gzip -t)"
+last="$(gzip -dc "$dump" | tail -n 3 | tr '\n' ' ')"
+case "$last" in
+  *"PostgreSQL database cluster dump complete"*) ;;
+  *) spark_die "dump $(basename "$dump") tronque : la ligne « PostgreSQL database cluster dump complete » manque (le contenu n'est pas affiche)" ;;
+esac
 spark_log "images : $PG_IMAGE / $N8N_IMAGE"
 
 # 1. Postgres jetable ----------------------------------------------------------------------
-docker rm -f "$PG" >/dev/null 2>&1 || true
+docker rm -f -v "$PG" >/dev/null 2>&1 || true
 docker network rm "$NET" >/dev/null 2>&1 || true
 docker network create "$NET" >/dev/null
 docker run -d --name "$PG" --network "$NET" -e POSTGRES_PASSWORD=restore-test "$PG_IMAGE" >/dev/null

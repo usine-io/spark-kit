@@ -6,7 +6,8 @@
 # Copie le gabarit, renseigne SPARK_PREFIX / SPARK_DOMAIN / SPARK_HOST_HTTP_PORT et genere les
 # secrets d'infrastructure vides. Alphabet URL-safe uniquement (A-Za-z0-9) : un mot de passe
 # avec des caracteres speciaux d'URL a deja fait boucler un service. Refuse d'ecraser un .env
-# existant sans --force. Le fichier est cree en 600. Aucun secret n'est affiche.
+# existant sans --force, et sort en code 2 avec un message clair si le repertoire de destination
+# n'existe pas. Le fichier est cree en 600. Aucun secret n'est affiche.
 # Compatible bash 3.2 (macOS) et bash 5 (Linux).
 set -euo pipefail
 
@@ -41,6 +42,9 @@ printf '%s' "$domain" | grep -Eq '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{
 if ! printf '%s' "$port" | grep -Eq '^[0-9]{1,5}$' || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
   printf 'port invalide (1-65535) : %s\n' "$port" >&2; exit 2
 fi
+target_dir="$(dirname "$target")"
+[ -d "$target_dir" ] || { printf 'repertoire de destination introuvable : %s (creer l arborescence infra/ d abord)\n' "$target_dir" >&2; exit 2; }
+[ -w "$target_dir" ] || { printf 'repertoire de destination non inscriptible : %s\n' "$target_dir" >&2; exit 2; }
 if [ -e "$target" ] && [ "$force" -ne 1 ]; then
   printf '%s existe deja ; --force pour l ecraser (les secrets actuels seraient perdus)\n' "$target" >&2
   exit 2

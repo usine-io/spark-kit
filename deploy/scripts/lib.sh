@@ -3,12 +3,36 @@
 # Les scripts sont copies tels quels dans infra/scripts/ : ils retrouvent infra/ par leur
 # propre chemin (../), ou par SPARK_INFRA_DIR si on les lance depuis ailleurs.
 # Compatible bash 3.2 (macOS) et bash 5 (Linux).
+#
+# Le .env est SOURCE COMME DU SHELL (`. .env`), par les scripts du kit comme par ce fichier-ci :
+# toute valeur qui contient `$`, un accent grave ou une espace doit etre entre guillemets simples
+# (NOM='valeur avec $ ou espace'), sinon elle est interpretee ou coupee. init-env.sh ne genere que
+# des valeurs A-Za-z0-9 ; check-env.sh juge la valeur telle que le shell la resout.
 
 # Derniere erreur emise par spark_die : reprise dans le message d'alerte (spark_alert).
 # Les messages de spark_die nomment des fichiers et des variables, jamais une valeur secrete.
 SPARK_LAST_ERROR=""
 
+# Alerte des la premiere erreur. Un script qui veut alerter pose SPARK_ALERT_SCRIPT="backup.sh"
+# juste apres avoir source lib.sh, AVANT spark_infra_dir / spark_load_env : des lors tout spark_die
+# (.env absent, variable obligatoire manquante, outil absent...) ecrit la ligne ALERTE sur stderr
+# et appelle SPARK_ALERT_WEBHOOK s'il est connu (environnement, ou .env deja charge). Une fois le
+# trap EXIT du script en place (le script pose SPARK_ALERT_TRAP=1), c'est le trap qui alerte, avec
+# le code de sortie et le contexte : spark_die ne double pas l'alerte.
+SPARK_ALERT_SCRIPT=""
+SPARK_ALERT_TRAP=0
+
 spark_die() {
+  SPARK_LAST_ERROR="$*"
+  printf 'ERREUR: %s\n' "$*" >&2
+  if [ -n "$SPARK_ALERT_SCRIPT" ] && [ "$SPARK_ALERT_TRAP" -eq 0 ]; then
+    spark_alert "$SPARK_ALERT_SCRIPT" "arret avant tout travail (code 2)"
+  fi
+  exit 2
+}
+
+# Meme sortie en code 2, sans alerte : pour les cas ou rien n'est casse (verrou deja pris).
+spark_die_quiet() {
   SPARK_LAST_ERROR="$*"
   printf 'ERREUR: %s\n' "$*" >&2
   exit 2
@@ -81,18 +105,18 @@ spark_load_env() {
 # Verrou d'execution (un seul backup.sh, un seul restore-test.sh a la fois).
 # `flock -n` quand il existe (Linux) ; sinon (macOS) un repertoire + pid, libere par spark_unlock.
 # Appele AVANT le trap EXIT des scripts : un deuxieme lancement sort en code 2 avec un message
-# clair, sans alerte (rien n'est casse : la premiere execution continue).
+# clair, sans alerte (spark_die_quiet : rien n'est casse, la premiere execution continue).
 SPARK_LOCK_DIR=""
 spark_lock() {
   local lock="$1" what="$2" pid
   if command -v flock >/dev/null 2>&1; then
     exec 9>>"$lock"
-    flock -n 9 || spark_die "$what deja en cours d'execution (verrou $lock) : rien n'est fait"
+    flock -n 9 || spark_die_quiet "$what deja en cours d'execution (verrou $lock) : rien n'est fait"
   else
     if ! mkdir "$lock.d" 2>/dev/null; then
       pid="$(cat "$lock.d/pid" 2>/dev/null || true)"
       if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-        spark_die "$what deja en cours d'execution (pid $pid, verrou $lock.d) : rien n'est fait"
+        spark_die_quiet "$what deja en cours d'execution (pid $pid, verrou $lock.d) : rien n'est fait"
       fi
       rm -rf "$lock.d"
       mkdir "$lock.d" || spark_die "verrou $lock.d impossible a poser"
@@ -130,17 +154,27 @@ spark_service_image() {
   printf '%s\n' "$image"
 }
 
-# Alerte d'echec : toujours sur stderr, et vers SPARK_ALERT_WEBHOOK (POST JSON) s'il est defini.
+# Alerte d'echec : toujours sur stderr (donc dans le journal du timer), et vers SPARK_ALERT_WEBHOOK
+# (POST JSON) s'il est defini. Sans .env lisible, le webhook n'est connu que s'il est pose dans
+# l'environnement (Environment= de l'unit) : la ligne ALERTE, elle, sort toujours.
 # La derniere ligne ERREUR du script (SPARK_LAST_ERROR) est jointe : elle ne porte jamais de valeur
 # secrete, seulement des noms de fichiers et de variables.
+spark_json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\n'; }
 spark_alert() {
   local script="$1" message="$2" payload
   [ -n "$SPARK_LAST_ERROR" ] && message="$message — ERREUR: $SPARK_LAST_ERROR"
   printf 'ALERTE [%s] %s: %s\n' "$(hostname)" "$script" "$message" >&2
   if [ -n "${SPARK_ALERT_WEBHOOK:-}" ]; then
-    payload="$(jq -cn --arg host "$(hostname)" --arg script "$script" --arg message "$message" \
-      --arg error "$SPARK_LAST_ERROR" --arg ts "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-      '{host: $host, script: $script, message: $message, error: $error, ts: $ts, status: "failure"}')"
+    if command -v jq >/dev/null 2>&1; then
+      payload="$(jq -cn --arg host "$(hostname)" --arg script "$script" --arg message "$message" \
+        --arg error "$SPARK_LAST_ERROR" --arg ts "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+        '{host: $host, script: $script, message: $message, error: $error, ts: $ts, status: "failure"}')"
+    else
+      # Sans jq (poste sans l'outil) : JSON minimal, guillemets et antislashs echappes a la main.
+      payload="$(printf '{"host":"%s","script":"%s","message":"%s","error":"%s","ts":"%s","status":"failure"}' \
+        "$(spark_json_escape "$(hostname)")" "$(spark_json_escape "$script")" "$(spark_json_escape "$message")" \
+        "$(spark_json_escape "$SPARK_LAST_ERROR")" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')")"
+    fi
     curl -fsS -m 15 -A "spark-kit-alert/1" -H 'Content-Type: application/json' \
       -d "$payload" "$SPARK_ALERT_WEBHOOK" >/dev/null 2>&1 \
       || printf 'ALERTE: le webhook SPARK_ALERT_WEBHOOK n a pas repondu\n' >&2

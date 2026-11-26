@@ -12,6 +12,10 @@
 # fichier, debarrassee des guillemets et des espaces : `NOM=`, `NOM=''`, `NOM="  "` et une ligne
 # absente sont « vides » ; `NOM=a` (un caractere) est renseigne. `docker compose config` ne dit
 # rien d'une variable presente mais vide : ce script complete sa verification.
+# Le script NE REGARDE QUE LE FICHIER : il est charge dans un environnement vide (`env -i`), une
+# variable exportee dans le shell appelant ne compte pas (ligne absente du fichier = FAIL, meme si
+# `SPARK_PREFIX` est pose dans le shell). Le fichier est source comme du shell : une valeur avec `$`,
+# accent grave ou espace doit etre entre guillemets simples.
 # Compatible bash 3.2 (macOS) et bash 5 (Linux).
 set -euo pipefail
 
@@ -26,7 +30,7 @@ vars=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --env) [ $# -ge 2 ] || spark_die "--env attend un chemin"; env_file="$2"; shift 2 ;;
-    -h|--help) sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    -h|--help) sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
     -*) spark_die "option inconnue : $1" ;;
     *) case "$1" in *[!A-Za-z0-9_]*) spark_die "nom de variable invalide : $1" ;; esac
        vars="$vars $1"; shift ;;
@@ -36,21 +40,23 @@ done
 [ -f "$env_file" ] || spark_die "$env_file introuvable"
 vars="${vars:-$DEFAULT_VARS}"
 
-# Les valeurs ne servent qu'a ce test : chargement dans un sous-shell, rien n'est exporte au-dela.
-(
+# Chargement dans un bash NEUTRE (`env -i` : aucune variable de l'appelant, seulement HOME et PATH) :
+# seul le fichier compte, et rien n'est exporte au-dela. `$vars` est volontairement eclate en mots.
+# shellcheck disable=SC2086,SC2016
+env -i HOME="${HOME:-/}" PATH="$PATH" LC_ALL=C bash -c '
   set +u
+  env_file="$1"; shift
   set -a
-  # shellcheck disable=SC1090
   . "$env_file"
   set +a
   fails=0
-  for v in $vars; do
-    if [ -n "$(spark_env_value "$v")" ]; then
-      printf 'OK   %s\n' "$v"
+  for v in "$@"; do
+    if [ -n "$(printf "%s" "${!v:-}" | tr -d "[:space:]")" ]; then
+      printf "OK   %s\n" "$v"
     else
-      printf 'FAIL %s absent ou vide\n' "$v"
+      printf "FAIL %s absent ou vide\n" "$v"
       fails=$((fails + 1))
     fi
   done
   [ "$fails" -eq 0 ]
-)
+' _ "$env_file" $vars

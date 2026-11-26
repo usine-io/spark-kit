@@ -14,9 +14,11 @@
 # Retention locale : BACKUP_KEEP_DAYS (defaut 14), par jeu complet (tous les fichiers d'un meme
 # horodatage partent ensemble). La copie hors machine (rclone copy + suppression par age, jamais
 # sync) et le test de restauration (restore-test.sh) completent le 3-2-1.
-# Sortie 0 si tout est ecrit et controle, 2 sinon (alerte envoyee a SPARK_ALERT_WEBHOOK si defini,
-# avec la derniere ligne ERREUR). Une seule execution a la fois (verrou backups/.lock-backup) :
-# un deuxieme lancement sort en code 2 avec un message clair, sans rien toucher.
+# Sortie 0 si tout est ecrit et controle, 2 sinon : ligne ALERTE sur stderr (journal du timer) et POST
+# a SPARK_ALERT_WEBHOOK s'il est defini, avec la derniere ligne ERREUR — y compris quand le script
+# s'arrete avant d'avoir commence (.env absent, N8N_ENCRYPTION_KEY manquante, age absent...).
+# Une seule execution a la fois (verrou backups/.lock-backup) : un deuxieme lancement sort en code 2
+# avec un message clair, sans rien toucher ni alerter.
 # Rien n'est ecrit tant que le chiffrement des secrets n'est pas possible (destinataire age valide
 # ou passphrase gpg lisible, outil present) ; chaque fichier est produit en .part et renomme en fin
 # de succes, secrets et volumes d'abord, dump en dernier : restore-test.sh prend « le dump le plus
@@ -29,6 +31,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
+# Alerte des la premiere ERREUR (.env absent, variable manquante...) : voir SPARK_ALERT_SCRIPT dans lib.sh.
+SPARK_ALERT_SCRIPT="backup.sh"
 
 INFRA_DIR="$(spark_infra_dir "$SCRIPT_DIR")"
 cd "$INFRA_DIR"
@@ -56,6 +60,7 @@ cleanup() {
   spark_unlock
 }
 trap cleanup EXIT
+SPARK_ALERT_TRAP=1   # a partir d'ici, c'est cleanup qui alerte (spark_die ne double pas)
 
 # 0. Pre-requis du chiffrement des secrets : verifies AVANT d'ecrire quoi que ce soit --------
 if [ -n "${BACKUP_AGE_RECIPIENT:-}" ]; then
@@ -93,7 +98,7 @@ for attempt in 1 2 3; do
     # pg_dumpall termine par la ligne de controle suivie d'une ligne vide : on lit les 3 dernieres.
     last="$(gzip -dc "$dump.part" | tail -n 3 | tr '\n' ' ')"
     case "$last" in *"PostgreSQL database cluster dump complete"*) dump_ok=1; break ;; esac
-    spark_log "essai $attempt : dump tronque (fin de fichier « $last »)"
+    spark_log "essai $attempt : dump tronque (ligne de controle absente ; le contenu n'est pas affiche)"
   else
     spark_log "essai $attempt : pg_dumpall en echec"
   fi
@@ -162,7 +167,8 @@ find "$BACKUP_DIR" -maxdepth 1 -type f -name 'pg_dumpall-*.sql.gz' -mtime +"$KEE
 # Orphelins (volume ou secrets d'un horodatage dont le dump n'existe plus) au-dela de KEEP_DAYS.
 find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'vol-*.tgz' -o -name 'secrets-*.tar.*' \) -mtime +"$KEEP_DAYS" -print 2>/dev/null \
   | while IFS= read -r old; do
-      stamp="$(printf '%s' "${old##*/}" | sed -n 's/.*-\([0-9]\{8\}-[0-9]\{6\}\)\.\(tgz\|tar\..*\)$/\1/p')"
+      # sed -E : meme syntaxe sur GNU (Linux) et BSD (macOS) ; l'alternance \| est GNU seulement.
+      stamp="$(printf '%s' "${old##*/}" | sed -En 's/.*-([0-9]{8}-[0-9]{6})\.(tgz|tar\..*)$/\1/p')"
       [ -n "$stamp" ] && [ ! -f "$BACKUP_DIR/pg_dumpall-$stamp.sql.gz" ] || continue
       rm -f "$old" && printf 'retention: suppression de l orphelin %s\n' "$old"
     done || true

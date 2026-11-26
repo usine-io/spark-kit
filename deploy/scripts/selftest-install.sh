@@ -5,11 +5,16 @@
 #   (defaut) copie deploy/ comme le guide le demande, cree un .env de test, puis :
 #            `docker compose config` sans variable manquante, `caddy validate` avec sites.d/ vide
 #            puis avec un fichier, verifie que chaque chemin monte existe (test -f), puis teste
-#            check-env.sh (valeurs vides, espaces, un caractere), la priorite environnement > .env
-#            de lib.sh et le verrou d'execution.
+#            check-env.sh (valeurs vides, espaces, un caractere, variable exportee mais ligne absente),
+#            la priorite environnement > .env de lib.sh, le verrou d'execution, et l'alerte de
+#            backup.sh quand il s'arrete avant d'avoir commence (.env absent : ligne ALERTE ;
+#            variable manquante : ligne ALERTE + POST recu par un webhook local).
 #   --up     demarre ensuite la stack sous le projet compose `spark-selftest` (port hote 18090),
 #            attend que -n8n et -db repondent via Caddy avec un MARQUEUR dans le corps (Caddy repond
-#            200 et corps vide a tout Host inconnu : un 200 seul ne prouve rien), puis detruit tout.
+#            200 et corps vide a tout Host inconnu : un 200 seul ne prouve rien), puis, si `age` est
+#            installe, joue backup.sh et restore-test.sh sur cette stack et verifie que le nombre de
+#            volumes Docker anonymes est le meme avant et apres (restore-test.sh ne laisse rien),
+#            puis detruit tout.
 #   --keep   conserve le repertoire temporaire (affiche) pour inspection.
 # Sortie 0 si tout passe, 1 sinon. Ne touche pas a une stack `spark` deja presente sur la machine.
 # Se lance depuis le DEPOT DU KIT (spark-kit/deploy/scripts/) : la copie dans infra/scripts/ n'a pas
@@ -134,6 +139,10 @@ env_case "espaces nus" "SPARK_PREFIX=   " 1
 env_case "un caractere" "SPARK_PREFIX=a" 0
 env_case "un caractere entre guillemets" 'SPARK_PREFIX="a"' 0
 env_case "ligne absente" "" 1
+# Seul le FICHIER compte : une variable exportee dans le shell appelant ne doit pas faire passer une ligne absente.
+grep -v '^SPARK_PREFIX=' "$INFRA/.env" > "$work/env-case"
+rc=0; out="$(SPARK_PREFIX=exportee "$INFRA/scripts/check-env.sh" --env "$work/env-case" SPARK_PREFIX 2>&1)" || rc=$?
+if [ "$rc" -eq 1 ]; then ok "SPARK_PREFIX exportee dans le shell, ligne absente -> code 1 ($out)"; else fail "SPARK_PREFIX exportee, ligne absente -> code $rc, attendu 1 ($out)"; fi
 rm -f "$work/env-case"
 
 printf '== 7. lib.sh : priorite de l environnement sur une ligne vide du .env, verrou\n'
@@ -154,6 +163,51 @@ case "$rc:$out" in
   *) fail "verrou : code $rc, sortie « $out »" ;;
 esac
 if (cd "$INFRA/scripts" && bash -c '. ./lib.sh; spark_lock "$1" apres; spark_unlock' _ "$work/lock" >/dev/null 2>&1); then ok "verrou libere apres la premiere execution"; else fail "verrou non libere"; fi
+
+printf '== 7.b backup.sh : alerte meme quand le script s arrete avant d avoir commence\n'
+# .env absent : code 2, ligne ERREUR et ligne ALERTE sur stderr (le journal du timer les garde).
+mkdir -p "$work/alert-infra" && cp "$INFRA/compose.yml" "$work/alert-infra/"
+rc=0; out="$(SPARK_INFRA_DIR="$work/alert-infra" "$INFRA/scripts/backup.sh" 2>&1)" || rc=$?
+case "$rc:$out" in
+  2:*"ERREUR: .env introuvable"*"ALERTE ["*"backup.sh"*) ok ".env absent -> code 2, ERREUR puis ALERTE sur stderr" ;;
+  *) fail ".env absent -> code $rc, sortie « $out »" ;;
+esac
+# Variable obligatoire manquante, webhook renseigne dans le .env : ALERTE + POST JSON recu.
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$work/hook" > "$work/hook.port" <<'PY' &
+import http.server, sys
+out = sys.argv[1]
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get('Content-Length', 0)))
+        open(out, 'wb').write(body)
+        self.send_response(200); self.end_headers()
+    def log_message(self, *a): pass
+srv = http.server.HTTPServer(('127.0.0.1', 0), H)
+print(srv.server_address[1], flush=True)
+srv.handle_request()
+PY
+  hook_pid=$!
+  for _ in $(seq 1 50); do [ -s "$work/hook.port" ] && break; sleep 0.1; done
+  hook_port="$(cat "$work/hook.port")"
+  grep -v -E '^(N8N_ENCRYPTION_KEY|SPARK_ALERT_WEBHOOK)=' "$INFRA/.env" > "$work/alert-infra/.env"
+  printf 'SPARK_ALERT_WEBHOOK=http://127.0.0.1:%s/hook\n' "$hook_port" >> "$work/alert-infra/.env"
+  rc=0; out="$(SPARK_INFRA_DIR="$work/alert-infra" "$INFRA/scripts/backup.sh" 2>&1)" || rc=$?
+  for _ in $(seq 1 50); do { [ -s "$work/hook" ] || ! kill -0 "$hook_pid" 2>/dev/null; } && break; sleep 0.1; done
+  body="$(cat "$work/hook" 2>/dev/null || true)"
+  case "$rc:$out" in
+    2:*"ERREUR: variable N8N_ENCRYPTION_KEY absente"*"ALERTE ["*) ok "N8N_ENCRYPTION_KEY absente -> code 2, ERREUR puis ALERTE" ;;
+    *) fail "N8N_ENCRYPTION_KEY absente -> code $rc, sortie « $out »" ;;
+  esac
+  case "$body" in
+    *'"script":"backup.sh"'*N8N_ENCRYPTION_KEY*'"status":"failure"'*) ok "webhook : POST JSON recu, nomme la variable manquante" ;;
+    *) fail "webhook : rien recu ou corps inattendu « ${body:0:120} »" ;;
+  esac
+  kill "$hook_pid" 2>/dev/null || true
+else
+  printf '  INFO  python3 absent : POST du webhook non teste (la ligne ALERTE l est)\n'
+fi
+rm -rf "$work/alert-infra" "$work/hook" "$work/hook.port"
 
 if [ "$up" -eq 1 ]; then
   printf '== 8. docker compose up (projet %s, port %s)\n' "$PROJECT" "$PORT"
@@ -180,6 +234,42 @@ if [ "$up" -eq 1 ]; then
   unknown="$(curl -s -m 10 -o /dev/null -w '%{http_code} %{size_download}' -H "Host: nope.$DOMAIN" "http://127.0.0.1:$PORT/" 2>/dev/null || printf '000 0')"
   printf '  INFO  Host inconnu -> %s (code et octets ; pas encore un 404)\n' "$unknown"
   spark_compose -p "$PROJECT" ps --format 'table {{.Name}}\t{{.Image}}\t{{.Status}}' 2>/dev/null | sed 's/^/        /' || true
+
+  printf '== 9. backup.sh puis restore-test.sh sur la stack de test\n'
+  if command -v age >/dev/null 2>&1 && command -v age-keygen >/dev/null 2>&1; then
+    # n8n repond a /healthz avant d'avoir fini ses migrations : attendre les tables que restore-test.sh compte.
+    for _ in $(seq 1 60); do
+      n="$(spark_compose -p "$PROJECT" exec -T postgres psql -U postgres -d n8n -Atc "SELECT count(*) FROM migrations WHERE EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='credentials_entity')" 2>/dev/null </dev/null || true)"
+      case "$n" in ''|0|*[!0-9]*) sleep 2 ;; *) break ;; esac
+    done
+    age-keygen -o "$work/backup.key" 2>/dev/null
+    recipient="$(sed -n 's/^# public key: //p' "$work/backup.key")"
+    sed -i.bak "s|^BACKUP_AGE_RECIPIENT=.*|BACKUP_AGE_RECIPIENT=$recipient|" "$INFRA/.env" && rm -f "$INFRA/.env.bak"
+    anon_volumes() { docker volume ls -q | grep -cE '^[0-9a-f]{64}$' || true; }
+    before="$(anon_volumes)"
+    # COMPOSE_PROJECT_NAME : les scripts lisent le nom du projet dans compose.yml (`spark`) ; ici la
+    # stack de test porte un autre nom, exactement comme `-p` ci-dessus.
+    if out="$(COMPOSE_PROJECT_NAME="$PROJECT" "$INFRA/scripts/backup.sh" 2>&1)"; then
+      ok "backup.sh : $(printf '%s' "$out" | grep -c 'volume .* -> ') volume(s) + dump + secrets, LAST_OK ecrit"
+    else
+      fail "backup.sh : $(printf '%s' "$out" | tail -3 | tr '\n' ' ')"
+    fi
+    if out="$(COMPOSE_PROJECT_NAME="$PROJECT" "$INFRA/scripts/restore-test.sh" 2>&1)"; then
+      ok "restore-test.sh : $(printf '%s' "$out" | grep -o 'restauration rejouee[^;]*' | head -1)"
+    else
+      fail "restore-test.sh : $(printf '%s' "$out" | tail -3 | tr '\n' ' ')"
+    fi
+    after="$(anon_volumes)"
+    if [ "$before" = "$after" ]; then ok "volumes Docker anonymes : $before avant, $after apres (restore-test.sh ne laisse rien)"; else fail "volumes Docker anonymes : $before avant, $after apres (fuite d'un volume par execution)"; fi
+    if [ -f "$INFRA/backups/LAST_OK" ] && [ -f "$INFRA/backups/RESTORE_TEST_OK" ]; then ok "LAST_OK et RESTORE_TEST_OK presents"; else fail "LAST_OK ou RESTORE_TEST_OK absent"; fi
+    # Dump tronque : refuse avant tout rejeu, code 2.
+    dump="$(find "$INFRA/backups" -maxdepth 1 -name 'pg_dumpall-*.sql.gz' | sort | tail -1)"
+    { gzip -dc "$dump" 2>/dev/null || true; } | head -n 50 | gzip -c > "$work/tronque.sql.gz"
+    rc=0; out="$(COMPOSE_PROJECT_NAME="$PROJECT" "$INFRA/scripts/restore-test.sh" "$work/tronque.sql.gz" 2>&1)" || rc=$?
+    case "$rc:$out" in 2:*"tronque"*) ok "dump tronque refuse (code 2)" ;; *) fail "dump tronque : code $rc, « $(printf '%s' "$out" | tail -2 | tr '\n' ' ') »" ;; esac
+  else
+    printf '  INFO  age absent : backup.sh / restore-test.sh non joues (apt install age / brew install age)\n'
+  fi
 fi
 
 printf '== Resultat : %d echec(s)\n' "$fails"

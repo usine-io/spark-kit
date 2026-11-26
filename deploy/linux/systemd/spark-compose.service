@@ -3,6 +3,10 @@ Description=Spark Docker Compose Stack
 Documentation=https://github.com/spark-kit/spark-kit
 Requires=docker.service
 After=docker.service
+# Pas de limite de relances : `systemctl start` doit toujours pouvoir rejouer `up -d` apres une
+# correction, meme apres plusieurs echecs rapproches (sinon « start request repeated too quickly »,
+# a lever par `systemctl reset-failed spark-compose.service`).
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
