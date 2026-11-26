@@ -5,3 +5,10 @@
 
 # Agent memory (local, per-machine — not versioned)
 memory/
+
+# Artefacts de site (jamais dans le kit)
+backup/
+backups/
+*.sql.gz
+.mcp.json
+MAINTENANCE

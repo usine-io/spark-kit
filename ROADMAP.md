@@ -11,7 +11,7 @@
 - Stack `docker-compose.yml` parametree par variables (host/domain/prefix/port)
 - Reverse-proxy Caddy lit ses vhosts depuis `${SPARK_PREFIX}` / `${SPARK_DOMAIN}`
 - `.env.example` couvre les 10 variables necessaires
-- Scripts `tunnel-up.sh` / `tunnel-down.sh` idempotents, edition par bloc marque
+- Scripts `tunnel-up.sh` / `tunnel-down.sh` idempotents, edition par bloc marque *(prevus : pas encore dans `deploy/scripts/` ; la procedure manuelle est l'etape 4 des guides)*
 - Pattern A (local-managed) verrouille et documente
 - Postgres + n8n + NocoDB + Caddy fonctionnels
 - Cloudflare Tunnel (pattern A, local-managed) integre des le deploiement
@@ -25,8 +25,8 @@
 ### Manquant
 - `scripts/spark-bootstrap.sh` (host setup automatise) — spec dans le doc archi, pas encore implemente
 - `scripts/spark-new-site.sh` (helper creation nouveau site)
-- Strategie backup (3-2-1 decrite dans le doc archi, aucun script)
-- Tests / linting `.env` / health-check post-up
+- Strategie backup : couche locale + test de restauration livres (`deploy/scripts/backup.sh`, `restore-test.sh`) ; copie hors machine (rclone) a documenter dans un runbook
+- Tests / linting `.env` : `deploy/scripts/selftest-install.sh` ; health-check post-up et watchdog restent a faire
 
 ---
 
@@ -72,7 +72,7 @@ Implementer le script du doc archi, avec les corrections post-incident :
 
 - Creation tunnel : `cloudflared tunnel create spark-<site>`
 - Generation `.env` avec secrets URL-safe
-- Lance `tunnel-up.sh` → routes + CNAMEs
+- Lance `tunnel-up.sh` → routes + CNAMEs *(prevu ; aujourd'hui `cloudflared tunnel route dns`, etape 4 des guides)*
 - Lance `docker compose up -d`
 
 Pre-requis manuel : `cloudflared login` (1x par compte CF).
@@ -175,3 +175,4 @@ Chantier B — la methodologie est l'os du projet. A et C s'enrichissent naturel
 | 2026-05-06 | — | Migration vers org GitHub `spark-kit`, extraction methodologie vers repo `templates` |
 | 2026-05-06 | — | Anonymisation des references au 1er site |
 | 2026-05-11 | 0 | Separation README (guide d'installation) / ROADMAP (suivi interne) |
+| 2026-11-26 | 1 | Lot 1 : infra en source unique dans `deploy/` (compose, Caddyfile, init-db, env.example, scripts, systemd), images figees par tag + digest, `backup.sh` / `restore-test.sh` + timers, guides en `cp` au lieu de heredocs — voir `CHANGELOG.md` |

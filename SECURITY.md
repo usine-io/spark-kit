@@ -48,17 +48,17 @@ Couverture minimum :
 
 ### 2.2 Headers de securite cote Caddy
 
-Sur **chaque vhost** du Caddyfile, le block `header { ... }` suivant est obligatoire :
+Sur **chaque vhost** du Caddyfile du site (`infra/config/caddy/Caddyfile`, copie de `deploy/config/caddy/Caddyfile` du kit), le block `header { ... }` suivant est obligatoire. **Le Caddyfile du kit ne le porte pas encore** : c'est le site qui l'ajoute (guide Linux, etape 5.3), ce qui rend son Caddyfile different de celui du kit (ecart attendu dans `diff -ru`). Un lot suivant du kit l'apportera sous forme de snippet `(securite)` importe par chaque vhost ; le site n'aura alors plus rien a poser. Sans `preload` sur HSTS : il engage tout le domaine de facon quasi irreversible. Valider (`caddy validate`) avant de recharger :
 
 ```caddy
 header {
-    Strict-Transport-Security "max-age=31536000; includeSubDomains"
-    X-Content-Type-Options "nosniff"
-    X-Frame-Options "SAMEORIGIN"
-    Referrer-Policy "strict-origin-when-cross-origin"
-    Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
-    -X-Powered-By
-    -Server
+	Strict-Transport-Security "max-age=63072000; includeSubDomains"
+	X-Content-Type-Options "nosniff"
+	X-Frame-Options "SAMEORIGIN"
+	Referrer-Policy "strict-origin-when-cross-origin"
+	Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+	-X-Powered-By
+	-Server
 }
 ```
 
@@ -90,7 +90,7 @@ Le CLI `nocodb.sh` n'est pas affecte (CORS est une protection navigateur, pas se
 
 ### 2.4 Caddy bind localhost-only
 
-Dans `docker-compose.yml`, Caddy doit binder **uniquement** sur `127.0.0.1` :
+Dans `compose.yml` (source : `deploy/compose.yml`), Caddy doit binder **uniquement** sur `127.0.0.1` :
 
 ```yaml
 ports:
@@ -110,8 +110,9 @@ Un monitoring qui partage le compose des services surveilles ne peut pas detecte
 - **Cloudflare WAF + Rate Limiting** sur la zone : rate limit serre sur `/login`, `/rest/login`, paths d'auth. Free tier suffisant pour les regles de base.
 - **Logs d'acces Caddy persistes** : ajouter un volume `caddy_logs:/var/log/caddy` + directive `log { output file ... }` dans chaque vhost. Permet l'investigation post-incident.
 - **Rotation des secrets infra** tous les 90 jours : `NOCODB_API_TOKEN`, `N8N_API_KEY`, `CF_API_TOKEN`. Le `.env` contient les valeurs courantes ; un changement necessite `docker compose up -d` pour propager.
+- **Sauvegardes chiffrees et testees** : `deploy/scripts/backup.sh` chiffre `.env` et la config n8n (`age`, cle privee hors machine) ; `deploy/scripts/restore-test.sh` prouve chaque jour que le dernier dump se restaure et qu'un identifiant n8n se dechiffre. La cle privee `age` et `N8N_ENCRYPTION_KEY` vont dans le coffre de l'entreprise, jamais dans la sauvegarde en clair.
 - **FileVault** active sur le Mac qui heberge le site (chiffrement disque). Le `.env` est en clair sur le disque, FileVault protege en cas de vol physique.
-- **Permissions reduites du CF_API_TOKEN** : `Zone:DNS:Edit` est suffisant pour `tunnel-up.sh`/`tunnel-down.sh`. Ne jamais utiliser un token global Account.
+- **Permissions reduites du CF_API_TOKEN** : `Zone:DNS:Edit` suffit pour creer les enregistrements du tunnel (`cloudflared tunnel route dns`, etape 4 des guides) et pour les scripts d'automatisation DNS prevus par la ROADMAP (`tunnel-up.sh` / `tunnel-down.sh`, pas encore dans le kit). Ne jamais utiliser un token global Account.
 
 ---
 

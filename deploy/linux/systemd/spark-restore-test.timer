@@ -1,0 +1,11 @@
+[Unit]
+Description=Spark - test de restauration quotidien
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+RandomizedDelaySec=600
+Persistent=true
+Unit=spark-restore-test.service
+
+[Install]
+WantedBy=timers.target

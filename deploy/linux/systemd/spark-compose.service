@@ -1,7 +1,12 @@
 [Unit]
 Description=Spark Docker Compose Stack
+Documentation=https://github.com/spark-kit/spark-kit
 Requires=docker.service
 After=docker.service
+# Pas de limite de relances : `systemctl start` doit toujours pouvoir rejouer `up -d` apres une
+# correction, meme apres plusieurs echecs rapproches (sinon « start request repeated too quickly »,
+# a lever par `systemctl reset-failed spark-compose.service`).
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
@@ -9,8 +14,21 @@ RemainAfterExit=yes
 User=spark
 Group=spark
 WorkingDirectory=/opt/spark/infra
+# Echec explicite sans .env : jamais de faux vert « stack demarree » sur une config absente.
+# Le fichier manquant est nomme dans le journal (journalctl -u spark-compose.service).
+ExecStartPre=/bin/sh -c 'test -f /opt/spark/infra/.env || { echo "/opt/spark/infra/.env absent" >&2; exit 1; }'
+ExecStartPre=/bin/sh -c 'test -f /opt/spark/infra/compose.yml || { echo "/opt/spark/infra/compose.yml absent" >&2; exit 1; }'
 ExecStart=/usr/bin/docker compose up -d --remove-orphans
-ExecStop=/usr/bin/docker compose down
+# Appliquer un changement en exploitation = `systemctl reload spark-compose.service` : rejoue
+# `up -d` (idempotent : seuls les services dont la definition a change sont recrees, un service
+# arrete est relance), avec le meme garde-fou que le demarrage. `systemctl start` sur une unit
+# deja active ne fait RIEN (systemd ne relance pas un service actif) ; `restart` passe par
+# ExecStop et coupe le site. `reset-failed && start` ne sert qu'a sortir de l'etat failed.
+ExecReload=/bin/sh -c 'test -f /opt/spark/infra/.env || { echo "/opt/spark/infra/.env absent, reload refuse" >&2; exit 1; }; test -f /opt/spark/infra/compose.yml || { echo "/opt/spark/infra/compose.yml absent, reload refuse" >&2; exit 1; }; exec /usr/bin/docker compose up -d --remove-orphans'
+# `docker compose down` SEULEMENT si la config est en place. Sinon (restart sur un .env ou un
+# compose.yml absent), l'arret est saute et les conteneurs restent en place : une config cassee
+# ne doit jamais couper le site. Le journal le dit ; corriger, puis `systemctl reset-failed` et `start`.
+ExecStop=/bin/sh -c 'if test -f /opt/spark/infra/.env && test -f /opt/spark/infra/compose.yml; then exec /usr/bin/docker compose down; fi; echo "spark-compose: .env ou compose.yml absent, docker compose down NON execute, les conteneurs restent en place" >&2'
 TimeoutStartSec=120
 
 [Install]

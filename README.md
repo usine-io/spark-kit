@@ -49,8 +49,9 @@ Spark se lit comme **3 briques empilables** : une solution technique qui tourne 
 
 ```
 1. Preparer le serveur   Docker, cloudflared, Node.js      ~10 min
-2. Configurer le site    .env, docker-compose               ~5 min
+2. Configurer le site    copier deploy/ du kit, .env        ~5 min
 3. Lancer la stack       docker compose up -d               ~5 min
+   + sauvegarder         backup.sh, restore-test.sh         ~5 min  (parcours Linux)
 4. Ouvrir le tunnel      cloudflared + DNS Cloudflare      ~10 min
 5. Installer Claude Code npm install + CLAUDE.md            ~5 min
    ─────────────────────────────────────────────────────
@@ -65,17 +66,15 @@ Spark se lit comme **3 briques empilables** : une solution technique qui tourne 
                 restore + offsite rclone (provider au choix)
 ```
 
-### Guides d'installation
+### Deux parcours, une seule stack
 
-Choisir le guide selon le serveur de prototypage :
+| Parcours | Guide | Pour quoi | Contenu |
+|----------|-------|-----------|---------|
+| **A — Bac a sable** | **[INSTALL.md](INSTALL.md)** | Mac Mini (macOS + Colima) : prototyper, former, tester. Docker tourne dans une VM : latence elevee, s'effondre sous charge. | Homebrew, Colima, LaunchAgents, etapes 1→4, depannage |
+| **B — Production** | **[INSTALL-LINUX.md](INSTALL-LINUX.md)** | Serveur Linux / VPS (Debian 12+, Ubuntu 22.04+) : Docker natif, systemd, sauvegardes planifiees et testees. | Docker CE, systemd, sauvegarde + test de restauration, etapes 1→7, depannage |
+| — | **[CLAUDE-CODE.md](CLAUDE-CODE.md)** | Tous | Configurer Claude Code (skills, MCP n8n, CLI NocoDB, smoke test) |
 
-| Guide | Serveur | Contenu |
-|-------|---------|---------|
-| **[INSTALL.md](INSTALL.md)** | Mac Mini (macOS + Colima) | Homebrew, Colima, LaunchAgents, etapes 1→4, depannage |
-| **[INSTALL-LINUX.md](INSTALL-LINUX.md)** | Serveur Linux / VPS (Debian 12+, Ubuntu 22.04+) | Docker CE, systemd, etapes 1→7, depannage |
-| **[CLAUDE-CODE.md](CLAUDE-CODE.md)** | Tous | Configurer Claude Code (skills, MCP n8n, CLI NocoDB, smoke test) |
-
-> Les deux guides d'installation aboutissent a la meme stack. La suite (CLAUDE-CODE.md) est commune.
+> Les deux parcours copient les **memes fichiers** depuis [`deploy/`](deploy/) (compose, Caddyfile, init Postgres, gabarit `.env`, scripts) : une seule source, deux facons de l'heberger. La suite (CLAUDE-CODE.md) est commune.
 
 ---
 
@@ -102,7 +101,7 @@ Spark implique 4 roles. Dans une petite structure, une seule personne peut cumul
 
 | Role | Ce qu'il fait | Ce qu'il touche |
 |------|--------------|-----------------|
-| **Admin / infra** | Installe le serveur, Docker, le tunnel. Gere le `.env` et les backups. | Terminal, `docker compose`, fichiers de config |
+| **Admin / infra** | Installe le serveur, Docker, le tunnel. Gere le `.env` et les sauvegardes. | Terminal, `docker compose`, `deploy/` du kit, `infra/` du site |
 | **Gestionnaire de credentials** | Configure les connexions aux logiciels metier (API keys, OAuth2) dans le coffre-fort n8n. | `<prefix>-n8n.<domain>` > Settings > Credentials |
 | **Builder** | Concoit et construit les POCs avec Claude Code : tables, workflows, pages HTML. | Claude Code + MCP, n8n, NocoDB, repo Git |
 | **Utilisateur final** | Utilise les outils construits : formulaires, dashboards, vues NocoDB. | `<prefix>-app.<domain>` et `<prefix>-db.<domain>` uniquement |
@@ -121,8 +120,8 @@ Le guide complet des roles (matrice d'acces, documentation par profil) est dans 
 |---|---------|------------|
 | **OS** | macOS 14+ (Sonoma) | Debian 12+ / Ubuntu 22.04+ |
 | **CPU** | Apple Silicon (M1+) | 4 vCPU |
-| **RAM** | 8 Go (16 Go recommande) | 4 Go (8 Go recommande) |
-| **Stockage** | 50 Go libres | 50 Go |
+| **RAM** | 8 Go (16 Go recommande) | 8 Go |
+| **Stockage** | 50 Go libres | 60 Go |
 | **Reseau** | Ethernet LAN | SSH + HTTPS sortant (port 443) + port 7844 sortant (TCP+UDP) vers Cloudflare |
 
 ### Cloudflare (obligatoire)
@@ -181,7 +180,8 @@ Le tunnel Cloudflare est le seul moyen d'obtenir du HTTPS propre sans infrastruc
 - Cloudflare gere le TLS et les certificats — zero config cote serveur
 - Utilisateurs PostgreSQL separes (n8n, nocodb) avec mots de passe distincts
 - `restart: unless-stopped` → les conteneurs redemarrent apres un reboot (LaunchAgent sur macOS, systemd sur Linux)
-- Images Docker epinglees par version + digest sha256 (pas de `latest`)
+- Images Docker figees par version **et** digest sha256 dans `deploy/compose.yml` (pas de `latest`) ; relevees par `deploy/scripts/pin-digests.sh`
+- Sauvegardes chiffrees et test de restauration quotidien livres avec le kit (`deploy/scripts/backup.sh`, `restore-test.sh`)
 - Secrets metier dans le coffre n8n Credentials, pas dans des fichiers `.env`
 
 ---
@@ -207,30 +207,41 @@ Le tunnel Cloudflare est le seul moyen d'obtenir du HTTPS propre sans infrastruc
 
 | Repo | Contenu |
 |------|---------|
-| **spark-kit** (ce repo) | Meta : README, installation, SECURITY.md, INCIDENTS.md, ROADMAP.md |
+| **spark-kit** (ce repo) | Meta : README, installation, `deploy/` (source unique de l'infra), SECURITY.md, INCIDENTS.md, ROADMAP.md, CHANGELOG.md |
 | **templates** | Methodologie, scripts setup, skills Claude Code, smoke test |
 
 **Sur le serveur**, les deux repos se retrouvent dans le dossier de travail (`~/spark/` sur macOS, `/opt/spark/` sur Linux) :
 
 ```
 $SPARK_HOME/                          ← dossier de travail sur le serveur
+├── spark-kit/                        ← clone de ce depot (read-only) : source unique de l'infra
+│   └── deploy/
+│       ├── compose.yml               la stack, images figees par tag + digest
+│       ├── env.example               gabarit du .env
+│       ├── config/caddy/             Caddyfile + sites.d/
+│       ├── config/postgres/          init-db.sh
+│       ├── scripts/                  init-env, backup, restore-test, pin-digests, selftest-install, mcp-n8n
+│       └── linux/systemd/            units et timers (compose, cloudflared, backup, restore-test)
 ├── templates/                        ← clone de spark-kit/templates (read-only)
-│   ├── setup-skeleton/               scripts de setup avances (securite, backup)
+│   ├── setup-skeleton/               scripts de setup avances (securite)
 │   ├── crash-test/                   smoke test
 │   ├── skills/                       skills Claude Code specifiques Spark
 │   ├── docs/                         runbooks (Caddy, CF Access, cloudflared)
 │   ├── CLAUDE.md                     gabarit agent a copier/adapter
 │   └── BIENVENUE.md, GETTING-STARTED.md, prd-template.md...
-├── infra/                            ← stack live (docker-compose, .env, config)
+├── infra/                            ← stack live : COPIES de spark-kit/deploy + .env du site
 │   ├── .env                          secrets (gitignore)
-│   ├── docker-compose.yml
-│   ├── config/
+│   ├── compose.yml                   copie de deploy/compose.yml
+│   ├── env.example                   copie de deploy/env.example
+│   ├── config/                       copie de deploy/config (caddy/, postgres/)
+│   ├── scripts/                      copie de deploy/scripts (dont mcp-n8n.sh)
 │   ├── apps/
-│   ├── scripts/
 │   ├── logs/
-│   └── backups/
+│   └── backups/                      dumps, tars, secrets chiffres, LAST_OK, RESTORE_TEST_OK
 └── discovery/                        ← fiches logiciel, PRD, questionnaires
 ```
+
+Regle : `infra/` ne contient que des copies de `deploy/` plus le `.env` et les fichiers propres au site (`sites.d/`, en-tetes). `diff -ru spark-kit/deploy/config infra/config` montre la derive ; une mise a jour du kit se fait par `cp`, jamais par edition parallele.
 
 ---
 

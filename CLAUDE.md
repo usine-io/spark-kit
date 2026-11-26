@@ -21,7 +21,22 @@ Ne pas recreer ici une copie du briefing : elle redivergerait. Toute amelioratio
 | `SECURITY.md` | Standard de durcissement, modele de menace, audit recurrent |
 | `INCIDENTS.md` | Incidents transverses (`INC-NN`, numerotes dans l'ordre chronologique, sans date) |
 | `ROADMAP.md` | Roadmap du kit |
-| `deploy/` | Fichiers de deploiement Linux (systemd, env.example) |
+| `CHANGELOG.md` | Une entree par lot de mise a jour du kit |
+| `deploy/` | **Source unique de l'infra** : `compose.yml`, `env.example`, `config/caddy/`, `config/postgres/`, `scripts/` (dont `check-env.sh`, `backup.sh`, `restore-test.sh`), `linux/systemd/` |
+
+## Infra : une seule source
+
+L'infra (compose, Caddyfile, init-db, env.example, scripts dont `mcp-n8n.sh`, units systemd) vit **une seule fois** dans `deploy/`. Les guides `INSTALL.md` et `INSTALL-LINUX.md` la **copient** (`cp`, `cp -R`) dans l'arborescence `infra/` du site ; ils ne la recopient jamais en heredoc. Toute modification d'infra se fait dans `deploy/`, puis :
+
+- `deploy/scripts/selftest-install.sh --up` (rejoue les copies des guides, `docker compose config`, `caddy validate`, `up`, sondes par marqueur, `down -v`) ;
+- `deploy/scripts/pin-digests.sh --check deploy/compose.yml` et `--check deploy/scripts/mcp-n8n.sh` (les digests sont ceux que les tags servent) ;
+- `shellcheck -x deploy/scripts/*.sh deploy/config/postgres/init-db.sh` ;
+- `docker run --rm -v "$PWD/deploy/config/caddy:/etc/caddy:ro" caddy:<tag du compose> caddy fmt --diff /etc/caddy/Caddyfile` : le Caddyfile reste au format `caddy fmt` (tabulations). Critere : la sortie ne contient **aucune ligne commencant par `+` ou `-`** (la commande peut sortir en code 0 ou non selon la version, seul le diff compte) ;
+- relire les guides pour que chaque chemin cite existe dans `deploy/`.
+
+**Exceptions tolerees au « jamais de heredoc »**, parce que propres a chaque site ou a chaque poste et non a l'infra : les plists launchd du guide macOS (Colima, cloudflared), la configuration cloudflared `config-spark.yml` (identifiant de tunnel du site) et `.mcp.json` (fichier local de Claude Code). Elles rejoindront `deploy/` lorsque cloudflared passera dans le compose (lot suivant). Tout le reste, scripts compris, vit dans `deploy/`.
+
+Les images sont figees par tag **et** digest, dans le compose comme dans `mcp-n8n.sh` ; jamais `:latest` (`pin-digests.sh` refuse une image sans tag ou en `:latest`). Une montee de version = changement de tag volontaire + `pin-digests.sh` + entree dans `CHANGELOG.md`.
 
 ## Depot public : anonymisation
 
