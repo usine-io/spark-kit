@@ -227,7 +227,7 @@ out=$(docker compose config -q 2>&1); [ -z "$out" ] && echo "compose: OK" || { e
 ~/infra/scripts/check-env.sh
 ```
 
-`compose: OK` ne s'affiche que si `docker compose config` n'a **rien** ecrit : un avertissement `variable is not set` (code de retour 0 pourtant) est affiche a la place et la commande echoue. Compose ne dit rien d'une variable **presente mais vide** (`NOM=`) : `check-env.sh` verifie une a une celles qui doivent avoir une valeur (`SPARK_PREFIX`, `SPARK_DOMAIN` et les 5 secrets) et affiche `OK   NOM` ou `FAIL NOM absent ou vide`, jamais la valeur. Il juge la valeur telle que le shell la **resout**, debarrassee des guillemets et des espaces : `NOM=`, `NOM=''`, `NOM="  "` ou une ligne absente sont vides ; une valeur d'un seul caractere est renseignee. Code de retour 1 au premier `FAIL`. Il **ne regarde que le fichier** (charge dans un environnement vide) : une variable exportee dans le shell ne compense pas une ligne absente.
+`compose: OK` ne s'affiche que si `docker compose config` n'a **rien** ecrit : un avertissement `variable is not set` (code de retour 0 pourtant) est affiche a la place et la commande echoue. Compose ne dit rien d'une variable **presente mais vide** (`NOM=`) : `check-env.sh` verifie une a une celles qui doivent avoir une valeur (`SPARK_PREFIX`, `SPARK_DOMAIN` et les 5 secrets) et affiche `OK   NOM` ou `FAIL NOM absent ou vide`, jamais la valeur. Il juge la valeur telle que le shell la **resout**, debarrassee des guillemets et des espaces : `NOM=`, `NOM=''`, `NOM="  "` ou une ligne absente sont vides ; une valeur d'un seul caractere est renseignee. Code de retour 1 s'il y a au moins un `FAIL` (toutes les variables sont affichees, il ne s'arrete pas au premier). Il **ne regarde que le fichier** (charge dans un environnement vide) : une variable exportee dans le shell ne compense pas une ligne absente.
 
 > **Le `.env` est source comme du shell** (`. .env`) par les scripts du kit, et par `docker compose` avec des regles proches. Toute valeur ajoutee a la main qui contient `$`, un accent grave ou une espace doit etre entre **guillemets simples** : `SPARK_ALERT_WEBHOOK='https://acme.example/hook?token=a$b'`. Les secrets generes par `init-env.sh` (`A-Za-z0-9`) n'en ont pas besoin.
 
@@ -246,7 +246,7 @@ Le `compose.yml` est commente ; l'essentiel :
 - **`mem_limit` sur n8n et NocoDB** : sans plafond, une rafale d'imports peut pousser un
   service a evincer les autres (incidents OOM vecus chez une PME). Ajuster a la RAM du
   serveur, mais toujours en poser un
-- Le repertoire `config/caddy/` est monte en entier : on peut remplacer le Caddyfile ou poser un fichier dans `sites.d/` puis `caddy reload`, sans redemarrer le conteneur. Tant que `sites.d/` ne contient aucun fichier `.caddy` (c'est le cas apres l'installation : seul `.keep` s'y trouve), Caddy ecrit a chaque demarrage et a chaque `validate` un avertissement `No files matching import glob pattern` avec le motif `/etc/caddy/sites.d/*.caddy` : **attendu, sans gravite**, il disparait au premier vhost pose. Au demarrage, `docker compose logs caddy` montre aussi `HTTP/2 skipped because it requires TLS` et `HTTP/3 skipped because it requires TLS` : attendus eux aussi, Caddy ne sert que du HTTP en interne, le TLS est chez Cloudflare
+- Le repertoire `config/caddy/` est monte en entier : on peut remplacer le Caddyfile ou poser un fichier dans `sites.d/` puis `caddy reload`, sans redemarrer le conteneur. Tant que `sites.d/` ne contient aucun fichier `.caddy` (c'est le cas apres l'installation : seul `.keep` s'y trouve), Caddy ecrit a chaque demarrage, a chaque `validate` et a chaque `reload` un avertissement `No files matching import glob pattern` avec le motif `/etc/caddy/sites.d/*.caddy` : **attendu, sans gravite**, il disparait au premier vhost pose. Au demarrage, `docker compose logs caddy` montre aussi `HTTP/2 skipped because it requires TLS` et `HTTP/3 skipped because it requires TLS` : attendus eux aussi, Caddy ne sert que du HTTP en interne, le TLS est chez Cloudflare
 
 ---
 
@@ -603,7 +603,7 @@ docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 
 Le `validate` ecrit quelques lignes JSON de niveau `info` et se termine par `Valid configuration` ; c'est cette derniere ligne qui compte. Deux lignes de niveau `warn` sont **attendues et sans gravite** :
 
-- `No files matching import glob pattern` avec `"pattern":"/etc/caddy/sites.d/*.caddy"` : `sites.d/` ne contient encore aucun fichier `.caddy` (seul `.keep`), l'`import` du Caddyfile ne trouve rien. Elle apparait aussi dans `docker compose logs caddy` a chaque demarrage, et disparait au premier vhost pose dans `sites.d/` ;
+- `No files matching import glob pattern` avec `"pattern":"/etc/caddy/sites.d/*.caddy"` : `sites.d/` ne contient encore aucun fichier `.caddy` (seul `.keep`), l'`import` du Caddyfile ne trouve rien. Elle apparait aussi a chaque `caddy reload` et dans `docker compose logs caddy` a chaque demarrage, et disparait au premier vhost pose dans `sites.d/` ;
 - `Caddyfile input is not formatted` : seulement si le bloc a ete colle en espaces au lieu de tabulations ; il fonctionne quand meme (`caddy fmt --overwrite` le remet au format).
 
 Toute autre ligne `warn` ou `error`, ou l'absence de `Valid configuration`, est une erreur a corriger avant le `reload`.
