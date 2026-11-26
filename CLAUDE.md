@@ -19,7 +19,7 @@ Ne pas recreer ici une copie du briefing : elle redivergerait. Toute amelioratio
 | `INSTALL-LINUX.md` | Installation Linux (serveur de production) |
 | `CLAUDE-CODE.md` | Configuration de Claude Code (skills, MCP, smoke test) |
 | `SECURITY.md` | Standard de durcissement, modele de menace, audit recurrent |
-| `INCIDENTS.md` | Incidents transverses (INC-AAAA-MM-JJ) |
+| `INCIDENTS.md` | Incidents transverses (`INC-NN`, numerotes dans l'ordre chronologique, sans date) |
 | `ROADMAP.md` | Roadmap du kit |
 | `deploy/` | Fichiers de deploiement Linux (systemd, env.example) |
 
@@ -31,7 +31,7 @@ Ce depot est **public**. Avant tout commit, nom de branche ou texte de PR :
 - aucune date precise ni chiffre recoupable dans une anecdote (« vecu chez une PME », sans date) ;
 - aucune reference a un document interne (rapport, PRD, lecon numerotee, chemin de vault) ;
 - aucune IP, aucun domaine reel (utiliser `acme.example`), aucun secret ;
-- passer le `grep` : noms interdits (liste tenue hors du depot), IP privees `192\.168|10\.[0-9]+\.|172\.(1[6-9]|2[0-9]|3[01])\.`, dates `2026-(0[1-9]|1[0-2])-[0-9]{2}` hors identifiants `INC-` et journal de la ROADMAP, noms de mois suivis d'une annee.
+- passer le `grep` : noms interdits (liste tenue hors du depot), IP privees `192\.168|10\.[0-9]+\.|172\.(1[6-9]|2[0-9]|3[01])\.`, dates `2026-(0[1-9]|1[0-2])-[0-9]{2}` hors journal de la ROADMAP (les identifiants d'incident `INC-NN` ne portent pas de date), noms de mois suivis d'une annee.
 
 ## Flux des leçons
 

@@ -7,7 +7,7 @@
 
 ---
 
-## INC-2026-09-06 — Servir la prod depuis Docker-sur-macOS (Colima) s'effondre sous charge : c'est la virtualisation, pas le dimensionnement — et l'outil natif Apple n'y change rien
+## INC-08 — Servir la prod depuis Docker-sur-macOS (Colima) s'effondre sous charge : c'est la virtualisation, pas le dimensionnement — et l'outil natif Apple n'y change rien
 
 **Site** : anonymisé — stack Caddy + n8n + NocoDB + Postgres servie en « prod » depuis un **Mac mini** (Docker via **Colima**) pendant la préparation d'une bascule vers un serveur **Linux dédié**.
 **Sévérité** : medium (aucune panne subie ; découvert par un **benchmark de rupture** avant bascule — décision-relevant pour toute migration de plateforme)
@@ -43,11 +43,11 @@ Servir la prod sur un **serveur Linux natif** (Docker directement sur le noyau L
 - [ ] Sous charge, distinguer **CPU-bound** (ici : nocodb 1 cœur, pas d'OOM) de **RAM-bound** : la reco de sizing en dépend (ici → prioriser le **vCPU**, pas la RAM).
 
 ### Temps réel
-~2 h : harnais (k6 + sampler + seeding d'IDs réels) + runs des 2 machines + analyse. Le test « jusqu'à la casse » a **reproduit en vrai** l'effondrement du pool n8n (cf. INC-2026-08-19) et confirmé que le watchdog seul n'en sort pas sur le Mac.
+~2 h : harnais (k6 + sampler + seeding d'IDs réels) + runs des 2 machines + analyse. Le test « jusqu'à la casse » a **reproduit en vrai** l'effondrement du pool n8n (cf. INC-07) et confirmé que le watchdog seul n'en sort pas sur le Mac.
 
 ---
 
-## INC-2026-08-19 — 5 OOM Postgres en une journée : la falaise des Lookups se franchit en jours, et n8n ne rétablit jamais son pool
+## INC-07 — 5 OOM Postgres en une journée : la falaise des Lookups se franchit en jours, et n8n ne rétablit jamais son pool
 
 **Site** : anonymisé (`acme` / `acme.example`) — stack NocoDB + n8n + Postgres, VM ~3,4 GiB
 **Sévérité** : high (atelier à l'arrêt ~45 min le matin ; 4 crashs Postgres 08h04→09h04, un 5e le soir)
@@ -94,7 +94,7 @@ Signalement à l'ouverture → service rétabli en ~45 min → cause racine et m
 
 ---
 
-## INC-2026-08-06 — Les étiquettes sortent en ZPL brut : le démarrage automatique avait perdu la configuration
+## INC-06 — Les étiquettes sortent en ZPL brut : le démarrage automatique avait perdu la configuration
 
 **Site** : anonymisé (`acme` / `acme.example`) — pseudo-API n8n → serveur d'impression local → étiqueteuse ZPL (en USB)
 **Sévérité** : high (impression d'étiquettes à l'arrêt en pleine production ; l'atelier ne peut plus identifier les appareils)
@@ -155,7 +155,7 @@ Tuer le processus, relancer à la main avec la cible explicite (`--printer "<nom
 - [ ] **Chercher le local avant le distant.** Un service qui tourne sur la machine de l'utilisateur doit regarder cette machine en premier. L'ordre d'une auto-détection est une décision de conception, pas un détail d'implémentation.
 - [ ] **Une auto-détection doit identifier ce qu'elle a trouvé**, pas se contenter d'un port ouvert. Demander « qui es-tu ? » quand le protocole le permet.
 - [ ] **Un service lancé sans console doit écrire un journal fichier** — sinon le seul message qui explique la panne est produit et perdu.
-- [ ] **Fichiers dupliqués = drift silencieux** (même classe qu'INC-2026-05-30) : toute copie servie au téléchargement doit porter un README qui désigne la source, et être resynchronisée dans le même commit que la source.
+- [ ] **Fichiers dupliqués = drift silencieux** (même classe qu'INC-03) : toute copie servie au téléchargement doit porter un README qui désigne la source, et être resynchronisée dans le même commit que la source.
 - [ ] **Relire la doc après un incident** : ici elle enseignait littéralement le geste fautif.
 - [ ] Fournir au bootstrap une **page de diagnostic** par service local (imprimante, douchette) : elle transforme un dépannage à distance impossible en un lien à ouvrir.
 
@@ -164,7 +164,7 @@ Signalement ~1 h après l'ouverture de l'atelier → logiciel mis hors de cause 
 
 ---
 
-## INC-2026-08-05 — Patch d'un workflow n8n actif par l'API : endpoint HS 2 min, puis patch fantôme
+## INC-05 — Patch d'un workflow n8n actif par l'API : endpoint HS 2 min, puis patch fantôme
 
 **Site** : anonymisé (`acme` / `acme.example`) — pseudo-API n8n → NocoDB, canal REST v1 (pas de MCP)
 **Sévérité** : medium (un endpoint de liste consommé par 3 écrans atelier répond « Error in workflow » pendant ~2 min, en pleine journée de production ; aucune donnée corrompue)
@@ -213,7 +213,7 @@ Détection immédiate (test de l'endpoint juste après le patch) → restauratio
 
 ---
 
-## INC-2026-06-30 — QR code ZPL n'encode qu'une seule lettre (préfixe `^FD` manquant sur `^BQ`)
+## INC-04 — QR code ZPL n'encode qu'une seule lettre (préfixe `^FD` manquant sur `^BQ`)
 
 **Site** : anonymisé (site Spark imprimant des étiquettes QR via une pseudo-API n8n → imprimante d'étiquettes en émulation ZPL)
 **Sévérité** : medium (étiquettes physiques imprimées mais QR illisible/faux → traçabilité cassée en atelier ; pas de panne stack)
@@ -267,7 +267,7 @@ Préfixer le `^FD` de **tout** `^BQ` : `^FD<data>` → `^FDMA,<data>` (Medium + 
 
 ---
 
-## INC-2026-05-30 — Briefing agent `CLAUDE.md` dupliqué dans 2 repos → drift silencieux
+## INC-03 — Briefing agent `CLAUDE.md` dupliqué dans 2 repos → drift silencieux
 
 **Site** : transverse (gouvernance kit, pas un site précis)
 **Sévérité** : low (pas de panne runtime ; dette documentaire qui dégrade le briefing agent au fil du temps)
@@ -321,7 +321,7 @@ Les distinctions instance↔gabarit (network `acme_spark` vs `spark_spark`, host
 
 ---
 
-## INC-2026-05-19 — MCP `nocodb-mcp` retourne Forbidden malgré un PAT valide
+## INC-02 — MCP `nocodb-mcp` retourne Forbidden malgré un PAT valide
 
 **Site** : anonymisé (site Spark avec NocoDB 2026.04.5+)
 **Sévérité** : medium (MCP NocoDB inutilisable côté agent ; CLI reste disponible)
@@ -395,7 +395,7 @@ Avant de merger, ajouter un test smoke `nc_pat` → `list_bases` dans `validate-
 
 ---
 
-## INC-2026-05-05 — NocoDB crashloop, 502 sur `<site>-db.<domain>`
+## INC-01 — NocoDB crashloop, 502 sur `<site>-db.<domain>`
 
 **Site** : anonymisé (1er site Spark déployé)
 **Sévérité** : medium (1 service public KO, autres services OK)
@@ -475,7 +475,7 @@ NC_DB_JSON: '{"client":"pg","connection":{"host":"postgres","port":5432,"user":"
 
 ---
 
-## INC-(antérieur, capturé dans le wiki) — Containers Spark exit code 0 / restart loop ~60s
+## INC-00 — (antérieur, capturé dans le wiki) Containers Spark exit code 0 / restart loop ~60s
 
 **Source** : retour d'expérience interne (symptômes d'un Colima sous-dimensionné)
 **Statut** : ✅ leçon déjà intégrée au sizing Colima du bootstrap (à coder en Phase 3)
@@ -511,8 +511,10 @@ colima start --cpu N --memory G --disk 100
 
 ## Template d'incident (à copier pour les prochains)
 
+Identifiant : `INC-NN`, numéro séquentiel dans l'ordre chronologique (le plus récent porte le numéro le plus élevé et se place en tête du fichier). Pas de date dans l'identifiant ni dans le corps : le dépôt est public, une date précise recoupe un site.
+
 ```markdown
-## INC-YYYY-MM-DD — <titre court>
+## INC-NN — <titre court>
 
 **Site** : <site> / <domain>
 **Sévérité** : low / medium / high / critical

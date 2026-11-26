@@ -131,7 +131,7 @@ Pipeline consultant/agent pour transformer une decouverte client en livrable :
 
 **Skills** (reference API) : 7 skills n8n + 1 skill NocoDB.
 
-**Outillage live** : MCP `n8n-mcp` embarque dans le docker-compose de chaque site ; NocoDB s'utilise via le CLI `nocodb.sh` de la skill (pas de MCP NocoDB integre — l'ecosysteme n'est pas stable contre NocoDB 2026.04.5+, cf. INC-2026-05-19 dans `INCIDENTS.md`).
+**Outillage live** : MCP `n8n-mcp` embarque dans le docker-compose de chaque site ; NocoDB s'utilise via le CLI `nocodb.sh` de la skill (pas de MCP NocoDB integre — l'ecosysteme n'est pas stable contre NocoDB 2026.04.5+, cf. INC-02 dans `INCIDENTS.md`).
 
 ### Priorite
 
@@ -143,7 +143,7 @@ Chantier B — la methodologie est l'os du projet. A et C s'enrichissent naturel
 
 | Decision | Raison |
 |----------|--------|
-| **NocoDB via `NC_DB_JSON`** | `NC_DB` (format URL) crashloop si chars speciaux dans le password. Incident 2026-05-05. |
+| **NocoDB via `NC_DB_JSON`** | `NC_DB` (format URL) crashloop si chars speciaux dans le password. Incident INC-01 d'`INCIDENTS.md`. |
 | **Cloudflare Tunnel pattern A** (local-managed) | Evite saturation dashboard CF sur N sites. |
 | **Single-level subdomain** `<prefix>-<service>.<domain>` | Universal SSL gratuit ne couvre pas wildcard 2 niveaux. |
 | **Postgres unique** n8n + NocoDB | Un `pg_dumpall` couvre tout. |
