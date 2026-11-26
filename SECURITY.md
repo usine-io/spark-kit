@@ -40,7 +40,7 @@ Couverture minimum :
 | `acme-db.acme.example` | email/group humain + Service Token pour CLI/MCP |
 | `acme-app.acme.example` | email/group humain (les browsers auth recoivent un cookie CF — les XHR vers `/webhook/api/*` passent automatiquement) |
 
-**Pattern recommande** : OAuth Microsoft Entra ID (M365) si l'entreprise utilise Microsoft, sinon Google OAuth, sinon email-OTP. Cf. PRD type "Auth via Cloudflare Access" — exemple chez une PME : PRD-011.
+**Pattern recommande** : OAuth Microsoft Entra ID (M365) si l'entreprise utilise Microsoft, sinon Google OAuth, sinon email-OTP. Cf. PRD type "Auth via Cloudflare Access".
 
 **Pour les webhooks consommes par des services externes** (pas par browsers humains) : utiliser un **Service Token** CF, transmis par le service en `CF-Access-Client-Id` + `CF-Access-Client-Secret`. Rotation tous les 90 jours.
 
@@ -121,7 +121,7 @@ Un monitoring qui partage le compose des services surveilles ne peut pas detecte
 - Secrets metier (APIs des logiciels client) dans **n8n > Settings > Credentials**, chiffres par `N8N_ENCRYPTION_KEY`. Pas dans `.env`.
 - Users Postgres separes (`n8n`, `nocodb`) avec leur propre mot de passe — pas de partage du `postgres` superuser.
 - `N8N_DIAGNOSTICS_ENABLED=false`, `N8N_PERSONALIZATION_ENABLED=false` (eviter les calls telemetrie sortants).
-- Generation de secrets avec alphabet URL-safe ET JSON-safe (`A-Za-z0-9-_`, pas `openssl rand -base64` qui peut sortir des `&=+%/`). Cf. INC-2026-05-05.
+- Generation de secrets avec alphabet URL-safe ET JSON-safe (`A-Za-z0-9-_`, pas `openssl rand -base64` qui peut sortir des `&=+%/`). Cf. INC-01.
 
 ---
 
@@ -138,7 +138,7 @@ Regles operationnelles :
 2. **Toujours valider** avec l'utilisateur avant une operation destructive (`docker volume rm`, `DELETE` DNS, suppression de fichier `.env`).
 3. **Charger en env, jamais en argv** : `set -a; source infra/.env; set +a` puis `unset` apres usage.
 4. **Pas de curl ad-hoc** sur NocoDB — passer par `nocodb.sh` qui ne loggue jamais le token.
-5. **Pas de `docker exec postgres psql`** pour lire le `.env` — utiliser le format de variables d'env du container (deja injecte) cf. INC-2026-05-05.
+5. **Pas de `docker exec postgres psql`** pour lire le `.env` — utiliser le format de variables d'env du container (deja injecte) cf. INC-01.
 
 ---
 
@@ -221,7 +221,7 @@ Liste de findings reutilisables pour l'audit. Severite indicative — a affiner 
 ## 8. Liens
 
 - Recettes Caddy (par site) : `infra/docs/caddy.md`
-- Incident NocoDB Forbidden (PAT v3) : `INCIDENTS.md` INC-2026-05-19
-- Incident NocoDB crashloop (secret URL-decode) : `INCIDENTS.md` INC-2026-05-05
-- PRD type "Auth Entra ID/M365 via CF Access" : voir le repo d'un site deploye (ex. PRD-011 d'une PME)
+- Incident NocoDB Forbidden (PAT v3) : `INCIDENTS.md` INC-02
+- Incident NocoDB crashloop (secret URL-decode) : `INCIDENTS.md` INC-01
+- PRD type "Auth Entra ID/M365 via CF Access" : a rediger dans le repo du site, a partir du gabarit PRD de `templates`
 - Runbook mise en place CF Access (dashboard + Terraform + Service Tokens) : `spark-templates/docs/cf-access.md`

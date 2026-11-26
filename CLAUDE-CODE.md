@@ -25,7 +25,7 @@ Les 7 skills n8n (`n8n-workflow-patterns`, `n8n-node-configuration`, etc.) sont 
 
 Le MCP n8n est lance **a la demande** par Claude Code (via `docker run`, pas dans le compose — ca economise ~512 Mo de RAM permanente). Il reste a creer le script de connexion et configurer Claude Code.
 
-Pour NocoDB, **pas de MCP** : l'agent passe par le CLI `nocodb.sh` de la skill `nocodb` (API v3, PAT). Raison : aucun package MCP NocoDB n'est aujourd'hui compatible avec les versions recentes de NocoDB (2026.04.5+) — cf. INC-2026-05-19. La doc se tient au canal qui fonctionne maintenant.
+Pour NocoDB, **pas de MCP** : l'agent passe par le CLI `nocodb.sh` de la skill `nocodb` (API v3, PAT). Raison : aucun package MCP NocoDB n'est aujourd'hui compatible avec les versions recentes de NocoDB (2026.04.5+) — cf. INC-02. La doc se tient au canal qui fonctionne maintenant.
 
 ### Creer le script wrapper
 
