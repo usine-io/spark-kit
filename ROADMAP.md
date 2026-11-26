@@ -148,7 +148,7 @@ Chantier B — la methodologie est l'os du projet. A et C s'enrichissent naturel
 | **Single-level subdomain** `<prefix>-<service>.<domain>` | Universal SSL gratuit ne couvre pas wildcard 2 niveaux. |
 | **Postgres unique** n8n + NocoDB | Un `pg_dumpall` couvre tout. |
 | **Caddy `tls internal`** (LAN) + CF (public) | Pas d'exposition directe internet. |
-| **`X-Forwarded-Proto https` force** + `N8N_PROXY_HOPS=2` | Sinon n8n refuse les cookies securises derriere proxy. |
+| **`X-Forwarded-Proto https` force** + `N8N_PROXY_HOPS=2` | Sinon n8n refuse les cookies securises derriere proxy. `N8N_PROXY_HOPS=2` est mesure et justifie dans `UPGRADES.md` (Cloudflare → cloudflared → Caddy) ; variable du `.env`, a confirmer sur un tunnel reel. |
 | **Secrets URL-safe** `A-Za-z0-9` | Lecon incident NocoDB. |
 | **Colima sizing adaptatif** | 8 GB → 4 GiB ; 16 GB+ → 6+ GiB. |
 | **Volumes Docker nommes** | Backup unifiee, pas de bind-mounts pour les donnees. |
@@ -176,3 +176,4 @@ Chantier B — la methodologie est l'os du projet. A et C s'enrichissent naturel
 | 2026-05-06 | — | Anonymisation des references au 1er site |
 | 2026-05-11 | 0 | Separation README (guide d'installation) / ROADMAP (suivi interne) |
 | 2026-11-26 | 1 | Lot 1 : infra en source unique dans `deploy/` (compose, Caddyfile, init-db, env.example, scripts, systemd), images figees par tag + digest, `backup.sh` / `restore-test.sh` + timers, guides en `cp` au lieu de heredocs — voir `CHANGELOG.md` |
+| 2026-11-26 | 2 | Lot 2 : n8n 2.49.6 (banc + retour arriere execute), cloudflared en conteneur (profil `tunnel`), sidecar `runners` en option, healthchecks et `mem_limit` sur chaque service, snippets Caddy `securite` / `maintenance` + 404, `UPGRADES.md`, `N8N_PROXY_HOPS=2` mesure — voir `CHANGELOG.md` |

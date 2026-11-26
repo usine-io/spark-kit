@@ -14,7 +14,7 @@
 
 Toutes les commandes sont a executer en tant que `root` ou via `sudo`, sauf mention contraire.
 
-**Source unique.** Les fichiers d'infrastructure (compose, Caddyfile, script d'initialisation Postgres, gabarit `.env`, scripts, units systemd) vivent **une seule fois** dans le depot du kit, sous [`deploy/`](deploy/). Ce guide les **copie** dans `/opt/spark/infra/` ; il ne les recopie jamais a la main. Pour voir ce que le site a de different du kit : `diff -ru /opt/spark/spark-kit/deploy/config /opt/spark/infra/config`.
+**Source unique.** Les fichiers d'infrastructure (compose, Caddyfile, script d'initialisation Postgres, gabarit `.env`, scripts, units systemd) vivent **une seule fois** dans le depot du kit, sous [`deploy/`](deploy/). Ce guide les **copie** dans `/opt/spark/infra/` ; il ne les recopie jamais a la main. La configuration cloudflared du site est **generee** depuis le `.env` par `scripts/tunnel-config.sh` (etape 4). Pour voir ce que le site a de different du kit : `diff -ru /opt/spark/spark-kit/deploy/config /opt/spark/infra/config` (attendu : rien, hors `sites.d/` et le drapeau `MAINTENANCE`).
 
 **Changements d'utilisateur** — `sudo -iu spark` et `exit` sont toujours la **derniere ligne de leur bloc**, jamais suivis d'autres commandes. Ces deux commandes changent de shell : ce qui suit dans le meme bloc est avale par le stdin du shell qu'on quitte ou qu'on ouvre, au lieu d'etre tape dedans — une commande plein ecran comme `nano` ne s'affiche alors pas. Coller un bloc a la fois, et attendre le nouveau prompt avant le suivant.
 
@@ -101,7 +101,9 @@ docker compose version
 > v1 (avec un tiret) est en fin de vie et n'est pas installe ici. Le fichier `compose.yml` du kit est
 > lu a l'identique par les deux.
 
-### 1.3 — Installer cloudflared
+### 1.3 — Installer le client cloudflared
+
+Le **tunnel lui-meme tourne dans le compose** (service `cloudflared`, profil `tunnel`, etape 4). Le binaire installe ici ne sert qu'aux commandes d'administration : `cloudflared login`, `tunnel create`, `tunnel route dns`.
 
 ```bash
 curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
@@ -123,6 +125,8 @@ Verifier (et noter la version dans le runbook) :
 ```bash
 cloudflared --version
 ```
+
+> La version du **connecteur** est celle du compose (`cloudflare/cloudflared:2026.11.2`, figee par tag et digest), pas celle du paquet apt : les deux peuvent differer sans consequence.
 
 ### 1.4 — Installer les outils
 
@@ -175,6 +179,7 @@ Une commande par famille de fichiers, toujours depuis `~/spark-kit/deploy/` :
 
 ```bash
 cp ~/spark-kit/deploy/compose.yml ~/infra/compose.yml
+cp ~/spark-kit/deploy/compose.runners.yml ~/infra/compose.runners.yml
 cp ~/spark-kit/deploy/env.example ~/infra/env.example
 cp -R ~/spark-kit/deploy/config ~/infra/
 chmod +x ~/infra/config/postgres/init-db.sh
@@ -186,12 +191,15 @@ Ce que ces copies posent :
 
 | Fichier dans `~/infra/` | Role |
 |---|---|
-| `compose.yml` | La stack (Postgres, n8n, NocoDB, Caddy), images figees par tag **et** digest |
+| `compose.yml` | La stack (Postgres, n8n, NocoDB, Caddy, et cloudflared sous le profil `tunnel`), images figees par tag **et** digest, plafond memoire et healthcheck sur chaque service |
+| `compose.runners.yml` | Override optionnel : n8n en mode task runner externe (sidecar `runners`), a n'utiliser qu'avec le profil `runners` apres le banc d'[`UPGRADES.md`](UPGRADES.md) |
 | `env.example` | Gabarit du `.env` (toute variable lue par le compose y figure) |
 | `config/postgres/init-db.sh` | Cree les bases et utilisateurs separes (`n8n`, `nocodb`) au premier demarrage |
-| `config/caddy/Caddyfile` | Reverse proxy interne (3 vhosts), pas de TLS (Cloudflare s'en charge) |
-| `config/caddy/sites.d/` | Vhosts additionnels du site, un fichier `.caddy` par vhost (vide au depart) |
-| `scripts/init-env.sh` | Cree le `.env` avec des secrets URL-safe |
+| `config/caddy/Caddyfile` | Reverse proxy interne (3 vhosts), pas de TLS (Cloudflare s'en charge) ; en-tetes de securite et journal d'acces JSON (snippet `securite`), page de maintenance (snippet `maintenance`, drapeau `config/caddy/MAINTENANCE`), `404` pour tout `Host` inconnu |
+| `config/caddy/sites.d/` | Vhosts additionnels du site, un fichier `.caddy` par vhost (vide au depart), qui importent `maintenance` et `securite` |
+| `scripts/init-env.sh` | Cree le `.env` avec des secrets URL-safe (`--sync` : complete un `.env` existant avec les variables nouvelles du kit) |
+| `scripts/tunnel-config.sh` | Ecrit la configuration cloudflared du site depuis le `.env` (etape 4), jamais a la main |
+| `scripts/n8n-releve.sh`, `scripts/restore-n8n.sh` | Releve avant/apres d'une montee de version n8n et restauration de la base + du volume n8n depuis un jeu de sauvegarde (retour arriere), voir [`UPGRADES.md`](UPGRADES.md) |
 | `scripts/check-env.sh` | Verifie, par nom et sans afficher de valeur, que les variables obligatoires du `.env` sont renseignees (etapes 2.3 et 7) ; ne regarde que le fichier, jamais l'environnement du shell |
 | `scripts/backup.sh`, `scripts/restore-test.sh` | Sauvegarde et test de restauration (etape 3.b), un seul exemplaire de chacun a la fois (verrou) |
 | `scripts/pin-digests.sh` | Releve ou controle les digests des images (compose et `mcp-n8n.sh`) |
@@ -203,7 +211,7 @@ Verifier que chaque fichier monte par le compose existe bien (un fichier absent 
 
 ```bash
 cd ~/infra
-for f in compose.yml env.example config/postgres/init-db.sh config/caddy/Caddyfile config/caddy/sites.d/.keep; do
+for f in compose.yml compose.runners.yml env.example config/postgres/init-db.sh config/caddy/Caddyfile config/caddy/sites.d/.keep; do
   [ -f "$f" ] && echo "OK   $f" || echo "FAIL $f"
 done
 ```
@@ -215,9 +223,11 @@ done
 ```
 
 > **Remplacer `<prefix>` et `<domain>`** par les vraies valeurs. Le script copie `deploy/env.example`,
-> renseigne le site et genere les 5 secrets d'infrastructure (alphabet URL-safe `A-Za-z0-9` : jamais
-> `base64`, qui produit des `+/=` incompatibles avec certaines configs). Le fichier est cree en `600`.
-> Les champs tunnel, sauvegarde et cles API restent vides : ils sont remplis aux etapes 3.b, 4 et 6.
+> renseigne le site, genere les 6 secrets d'infrastructure (5 mots de passe et cles, plus le jeton du
+> sidecar runner ; alphabet URL-safe `A-Za-z0-9` : jamais `base64`, qui produit des `+/=` incompatibles
+> avec certaines configs) et pose `SPARK_UID`/`SPARK_GID` (l'utilisateur `spark`, sous lequel tournera
+> le conteneur cloudflared). Le fichier est cree en `600`. Les champs tunnel, sauvegarde et cles API
+> restent vides : ils sont remplis aux etapes 3.b, 4 et 6.
 
 Verifier la configuration, sans afficher les secrets :
 
@@ -227,7 +237,7 @@ out=$(docker compose config -q 2>&1); [ -z "$out" ] && echo "compose: OK" || { e
 ~/infra/scripts/check-env.sh
 ```
 
-`compose: OK` ne s'affiche que si `docker compose config` n'a **rien** ecrit : un avertissement `variable is not set` (code de retour 0 pourtant) est affiche a la place et la commande echoue. Compose ne dit rien d'une variable **presente mais vide** (`NOM=`) : `check-env.sh` verifie une a une celles qui doivent avoir une valeur (`SPARK_PREFIX`, `SPARK_DOMAIN` et les 5 secrets) et affiche `OK   NOM` ou `FAIL NOM absent ou vide`, jamais la valeur. Il juge la valeur telle que le shell la **resout**, debarrassee des guillemets et des espaces : `NOM=`, `NOM=''`, `NOM="  "` ou une ligne absente sont vides ; une valeur d'un seul caractere est renseignee. Code de retour 1 s'il y a au moins un `FAIL` (toutes les variables sont affichees, il ne s'arrete pas au premier). Il **ne regarde que le fichier** (charge dans un environnement vide) : une variable exportee dans le shell ne compense pas une ligne absente.
+`compose: OK` ne s'affiche que si `docker compose config` n'a **rien** ecrit : un avertissement `variable is not set` (code de retour 0 pourtant) est affiche a la place et la commande echoue. Compose ne dit rien d'une variable **presente mais vide** (`NOM=`) : `check-env.sh` verifie une a une celles qui doivent avoir une valeur (`SPARK_PREFIX`, `SPARK_DOMAIN`, les 6 secrets, `SPARK_UID`, `SPARK_GID`) et affiche `OK   NOM` ou `FAIL NOM absent ou vide`, jamais la valeur. Il juge la valeur telle que le shell la **resout**, debarrassee des guillemets et des espaces : `NOM=`, `NOM=''`, `NOM="  "` ou une ligne absente sont vides ; une valeur d'un seul caractere est renseignee. Code de retour 1 s'il y a au moins un `FAIL` (toutes les variables sont affichees, il ne s'arrete pas au premier). Il **ne regarde que le fichier** (charge dans un environnement vide) : une variable exportee dans le shell ne compense pas une ligne absente.
 
 > **Le `.env` est source comme du shell** (`. .env`) par les scripts du kit, et par `docker compose` avec des regles proches. Toute valeur ajoutee a la main qui contient `$`, un accent grave ou une espace doit etre entre **guillemets simples** : `SPARK_ALERT_WEBHOOK='https://acme.example/hook?token=a$b'`. Les secrets generes par `init-env.sh` (`A-Za-z0-9`) n'en ont pas besoin.
 
@@ -235,18 +245,21 @@ out=$(docker compose config -q 2>&1); [ -z "$out" ] && echo "compose: OK" || { e
 
 Le `compose.yml` est commente ; l'essentiel :
 
-- Caddy ecoute sur `127.0.0.1:18080` — pas accessible depuis le reseau, uniquement via cloudflared
+- Caddy ecoute sur `127.0.0.1:18080` — pas accessible depuis le reseau. Avec le profil `tunnel` (etape 4), cloudflared tourne **dans le compose** et vise `http://caddy:80` sur le reseau interne : le port hote ne sert plus qu'aux sondes locales
 - PostgreSQL cree des **utilisateurs separes** (n8n, nocodb) avec des mots de passe distincts ; `init-db.sh` ne rejoue jamais sur un volume existant (changer un mot de passe ensuite = `ALTER USER`)
 - NocoDB utilise `NC_DB_JSON` (objet) et non `NC_DB` (URL) — evite les crashloops si le password contient des caracteres speciaux
 - **Toutes les images sont figees par tag et digest** (jamais `:latest`) : un `pull` surprise = migration
   de schema sans retour arriere, et une **restauration de sauvegarde exige la meme version
   que la source** (vecu chez une PME : un serveur en `:latest` face a une prod
   figee sur une version plus ancienne — a realigner avant tout transfert de donnees). Monter une version
-  = modifier le tag dans `compose.yml` volontairement, puis `scripts/pin-digests.sh compose.yml`
-- **`mem_limit` sur n8n et NocoDB** : sans plafond, une rafale d'imports peut pousser un
-  service a evincer les autres (incidents OOM vecus chez une PME). Ajuster a la RAM du
-  serveur, mais toujours en poser un
-- Le repertoire `config/caddy/` est monte en entier : on peut remplacer le Caddyfile ou poser un fichier dans `sites.d/` puis `caddy reload`, sans redemarrer le conteneur. Tant que `sites.d/` ne contient aucun fichier `.caddy` (c'est le cas apres l'installation : seul `.keep` s'y trouve), Caddy ecrit a chaque demarrage, a chaque `validate` et a chaque `reload` un avertissement `No files matching import glob pattern` avec le motif `/etc/caddy/sites.d/*.caddy` : **attendu, sans gravite**, il disparait au premier vhost pose. Au demarrage, `docker compose logs caddy` montre aussi `HTTP/2 skipped because it requires TLS` et `HTTP/3 skipped because it requires TLS` : attendus eux aussi, Caddy ne sert que du HTTP en interne, le TLS est chez Cloudflare
+  = suivre la fiche d'[`UPGRADES.md`](UPGRADES.md) (jamais un simple changement de tag : banc sur copie, retour arriere ecrit)
+- **`mem_limit` sur chaque service** (n8n 1 Go, NocoDB 900 Mo, Postgres 512 Mo, Caddy 128 Mo, variables `*_MEM_LIMIT` du `.env`) : sans plafond, une rafale d'imports pousse un
+  service a evincer les autres, et c'est Postgres que le noyau tue en premier (incidents OOM vecus chez une PME). Pour n8n, le tas Node est borne sous le plafond : `N8N_HEAP_MB + N8N_RUNNERS_HEAP_MB + ~200 Mo <= N8N_MEM_LIMIT`
+- **n8n** : module `insights` desactive (un workflow execute puis supprime en moins de 30 s empoisonnait son tampon, n8n ralentissait chaque jour), retention des executions a 7 jours / 150 000 (`execution_data` representait l'essentiel de la base), task runner **interne** par defaut (le sidecar `runners` est une option bancee, voir `UPGRADES.md`), `N8N_PROXY_HOPS=2` (Cloudflare → cloudflared → Caddy ; une valeur trop basse donne la meme IP a tous les utilisateurs et fausse le limiteur de connexions). Jamais de `N8N_CONCURRENCY_PRODUCTION_LIMIT` sans banc de charge
+- **Healthcheck sur chaque service** : Postgres (`pg_isready`), n8n (`/healthz/readiness`, le seul qui dise vrai : `/healthz` repond `ok` avec une base morte), NocoDB (`/api/v1/health`), Caddy (un vhost reel, avec `Host` et lecture du corps). `docker compose ps` affiche `(healthy)` quand tout est pret ; n8n a 2 minutes de grace (`start_period`) parce que les migrations d'une montee de version prennent de l'ordre d'une minute et qu'il ne faut **pas** le redemarrer pendant
+- Le repertoire `config/caddy/` est monte en entier : on peut remplacer le Caddyfile, poser un fichier dans `sites.d/` ou le drapeau `MAINTENANCE` (503 sur tous les vhosts, `UPGRADES.md`) puis `caddy reload`, sans redemarrer le conteneur. Tant que `sites.d/` ne contient aucun fichier `.caddy` (c'est le cas apres l'installation : seul `.keep` s'y trouve), Caddy ecrit a chaque demarrage, a chaque `validate` et a chaque `reload` un avertissement `No files matching import glob pattern` avec le motif `/etc/caddy/sites.d/*.caddy` : **attendu, sans gravite**, il disparait au premier vhost pose. Au demarrage, `docker compose logs caddy` montre aussi `HTTP/2 skipped because it requires TLS` et `HTTP/3 skipped because it requires TLS` : attendus eux aussi, Caddy ne sert que du HTTP en interne, le TLS est chez Cloudflare
+- Les **en-tetes de securite** (`SECURITY.md` §2.2), le **journal d'acces JSON** et le **CORS NocoDB** sont poses par le Caddyfile du kit : rien a ajouter sur le site. Un `Host` inconnu recoit `404`
+- Journaux des conteneurs bornes (`json-file`, 5 x 20 Mo par service)
 
 ---
 
@@ -259,7 +272,7 @@ cd ~/infra
 docker compose up -d
 ```
 
-Attendre ~30 secondes, puis verifier. La sonde lit un **marqueur dans le corps** de la reponse (`/healthz` de n8n, `/api/v1/health` de NocoDB) : Caddy repond `200` avec un corps vide a tout `Host` qu'il ne connait pas, un code `200` seul ne prouverait donc pas le routage.
+Attendre ~30 secondes, puis verifier. La sonde lit un **marqueur dans le corps** de la reponse (`/healthz/readiness` de n8n, qui ne repond `ok` que si la base est jointe ; `/api/v1/health` de NocoDB) : un code `200` seul ne prouve pas le routage. Un `Host` inconnu doit recevoir `404`.
 
 ```bash
 cd ~/infra
@@ -274,15 +287,17 @@ cd ~/infra
       *) printf "  %-6s FAIL (%s : corps « %.60s »)\n" "-$1" "$2" "$body"; false ;;
     esac
   }
-  probe n8n /healthz '"status":"ok"'
+  probe n8n /healthz/readiness '"status":"ok"'
   probe db  /api/v1/health '"message":"OK"'
+  code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H "Host: inconnu.${SPARK_DOMAIN}" "http://127.0.0.1:${SPARK_HOST_HTTP_PORT:-18080}/")
+  [ "$code" = 404 ] && echo "  Host inconnu -> 404 OK" || echo "  Host inconnu -> $code FAIL (attendu 404)"
 )
 docker compose ps --format "table {{.Name}}\t{{.Image}}\t{{.Status}}"
 ```
 
-Les services tournent et repondent via Caddy sur `127.0.0.1:18080`, mais ne sont pas encore accessibles depuis l'exterieur. La colonne `IMAGE` affiche chaque image telle que le `compose.yml` la fige, **tag suivi du digest** (`postgres:16.16-alpine@sha256:...`, `n8nio/n8n:2.19.4@sha256:...`, `nocodb/nocodb:2026.04.5@sha256:...`, `caddy:2.11.9-alpine@sha256:...`), et `postgres` doit etre `healthy`.
+Les services tournent et repondent via Caddy sur `127.0.0.1:18080`, mais ne sont pas encore accessibles depuis l'exterieur. La colonne `IMAGE` affiche chaque image telle que le `compose.yml` la fige, **tag suivi du digest** (`postgres:16.16-alpine@sha256:...`, `n8nio/n8n:2.49.6@sha256:...`, `nocodb/nocodb:2026.04.5@sha256:...`, `caddy:2.11.9-alpine@sha256:...`). La colonne `STATUS` passe a `(healthy)` pour les **quatre** services : tout de suite pour Postgres, en moins de 2 minutes pour n8n, NocoDB et Caddy (`health: starting` entre-temps est normal : periode de grace des healthchecks). `cloudflared` n'apparait pas encore : il demarre avec le profil `tunnel` a l'etape 4.
 
-> **Limite connue.** Un `Host` inconnu (`curl -H "Host: nimporte.quoi" http://127.0.0.1:18080/`) recoit aujourd'hui `200` et un corps vide, pas un `404` : d'ou les sondes par marqueur. L'attrape-tout `404` du Caddyfile vient avec un lot suivant du kit.
+> `docker compose logs n8n` montre au demarrage une ligne `There is a deprecation related to your n8n setup` suivie de `N8N_RUNNERS_MODE -> Internal task runner mode is deprecated` : **attendue**. Le kit garde le runner interne par defaut (un processus de moins, une memoire bornee ensemble) ; le mode externe est le profil `runners`, a adopter apres le banc d'[`UPGRADES.md`](UPGRADES.md). Toute autre ligne `deprecation` est a lire.
 
 ### Installer le service systemd
 
@@ -362,7 +377,7 @@ ls -la ~/infra/backups/
 ```
 
 Attendu :
-- `backup.sh` ecrit un **jeu** a un meme horodatage `<stamp>` : `pg_dumpall-<stamp>.sql.gz`, un `vol-<volume>-<stamp>.tgz` par volume hors Postgres (`n8n_data`, `nocodb_data`, `caddy_data`, `caddy_config`), `secrets-<stamp>.tar.age`, et termine par `sauvegarde ... complete`. La retention (`BACKUP_KEEP_DAYS`, 14 jours) supprime les jeux entiers, jamais un fichier isole.
+- `backup.sh` ecrit un **jeu** a un meme horodatage `<stamp>` : `pg_dumpall-<stamp>.sql.gz`, un `vol-<volume>-<stamp>.tgz` par volume hors Postgres (`n8n_data`, `nocodb_data`, `caddy_data`, `caddy_config`, `caddy_logs`), `secrets-<stamp>.tar.age`, et termine par `sauvegarde ... complete`. La retention (`BACKUP_KEEP_DAYS`, 14 jours) supprime les jeux entiers, jamais un fichier isole.
 - `restore-test.sh` demarre un Postgres jetable avec la meme image, rejoue le dump, affiche `restauration rejouee : 1 erreur(s), toutes attendues` (le role `postgres` existe deja), les comptes de bases, de tables et de migrations n8n, puis compte les identifiants n8n dans la copie. **A ce stade il n'y en a aucun** (le premier acces n8n est l'etape 6) : le script affiche `AVERTISSEMENT : aucun identifiant n8n dans la base, dechiffrement non verifie`, puis `test de restauration OK`, et sort en code 0. Le controle de dechiffrement ne porte sur rien tant qu'un identifiant n'existe pas ; l'etape 6 en cree un et rend ce controle obligatoire.
 - `backup.sh` ecrit `backups/LAST_OK` et `restore-test.sh` ecrit `backups/RESTORE_TEST_OK` (un horodatage chacun, uniquement en fin de succes : `cat ~/infra/backups/LAST_OK ~/infra/backups/RESTORE_TEST_OK`).
 - `backup.sh` refuse d'ecrire quoi que ce soit si `BACKUP_AGE_RECIPIENT` est vide ou n'est pas une cle `age1...` valide (ou si `age` manque) : une sauvegarde sans ses secrets n'est pas une sauvegarde. Chaque fichier est produit en `.part` et renomme seulement quand tout est controle, secrets et volumes d'abord, dump en dernier : le dump le plus recent (celui que `restore-test.sh` prend) a toujours son jeu complet.
@@ -402,7 +417,7 @@ Sauvegarde toutes les 6 h, test de restauration chaque nuit. Les deux units sont
 
 ## Etape 4 — Ouvrir le tunnel Cloudflare
 
-Le tunnel Cloudflare cree une connexion sortante securisee entre le serveur et Cloudflare. Le trafic arrive en HTTPS chez CF, transite par le tunnel chiffre, et atterrit sur Caddy en HTTP local. **Aucun port entrant a ouvrir, aucun certificat a gerer.**
+Le tunnel Cloudflare cree une connexion sortante securisee entre le serveur et Cloudflare. Le trafic arrive en HTTPS chez CF, transite par le tunnel chiffre, et atterrit sur Caddy en HTTP. **Aucun port entrant a ouvrir, aucun certificat a gerer.** Le connecteur `cloudflared` tourne **dans le compose** (service `cloudflared`, profil `tunnel`), sur le reseau interne de la stack, vers `http://caddy:80` ; il n'y a pas de service systemd a part : `spark-compose.service` le relance au demarrage avec le reste.
 
 **Pre-requis** : le domaine (`SPARK_DOMAIN`) doit avoir ses nameservers pointes vers Cloudflare (zone active sur le dashboard CF).
 
@@ -438,29 +453,43 @@ cloudflared tunnel create spark-<prefix>
 
 > La commande affiche un UUID (ex: `a1b2c3d4-...`) et cree `~/.cloudflared/<UUID>.json`. Noter le UUID.
 
-### 4.3 — Creer la config du tunnel
+### 4.3 — Renseigner le tunnel dans le .env
 
 ```bash
-TUNNEL_ID="<UUID affiche ci-dessus>"
-
-cat > ~/.cloudflared/config-spark.yml <<EOF
-tunnel: $TUNNEL_ID
-credentials-file: /opt/spark/.cloudflared/$TUNNEL_ID.json
-
-ingress:
-  - hostname: <prefix>-n8n.<domain>
-    service: http://localhost:18080
-  - hostname: <prefix>-app.<domain>
-    service: http://localhost:18080
-  - hostname: <prefix>-db.<domain>
-    service: http://localhost:18080
-  - service: http_status:404
-EOF
+nano ~/infra/.env
 ```
 
-> Adapter les hostnames avec les vraies valeurs de `<prefix>` et `<domain>`. Ce fichier est propre au site (identifiant de tunnel) : c'est le seul fichier de configuration qui ne vient pas du kit.
+Completer (toujours dans le shell `spark`) :
 
-### 4.4 — Creer les DNS
+```
+SPARK_TUNNEL_ID=<UUID affiche ci-dessus>
+SPARK_TUNNEL_DIR=/opt/spark/.cloudflared
+COMPOSE_PROFILES=tunnel
+CF_API_TOKEN=<token avec scope Zone:DNS:Edit>
+CF_ZONE_ID=<ID de la zone parente>
+```
+
+> `SPARK_TUNNEL_DIR` est le repertoire que `cloudflared login` et `tunnel create` viennent de remplir (`cert.pem`, `<UUID>.json`) ; le compose le monte **en lecture seule** dans le conteneur, qui tourne sous l'utilisateur `spark` (`SPARK_UID`/`SPARK_GID`, poses a l'etape 2.3) et lit donc ces fichiers en `600` sans `chown`. `COMPOSE_PROFILES=tunnel` fait entrer le service `cloudflared` dans tout `docker compose up -d`, y compris celui de `spark-compose.service` au demarrage. `SPARK_TUNNEL_CONFIG` reste vide (variante hote seulement).
+
+### 4.4 — Generer la configuration du tunnel
+
+```bash
+~/infra/scripts/tunnel-config.sh
+cat /opt/spark/.cloudflared/config.yml
+```
+
+Attendu : `config.yml ecrit (container) : tunnel <UUID>, ingress -> http://caddy:80`, puis le fichier : `tunnel`, `credentials-file: /etc/cloudflared/<UUID>.json` (chemin **dans** le conteneur), trois `hostname` vers `http://caddy:80` et le `http_status:404` final. Le script refuse d'ecrire si `<UUID>.json` manque ou si `SPARK_TUNNEL_ID` n'est pas un UUID ; il se relance apres tout changement du `.env` (`--check` dit si le fichier est a jour). Un vhost ajoute dans `sites.d/` s'ajoute a l'ingress par `SPARK_TUNNEL_EXTRA_HOSTS="nom.complet.<domain>"` dans le `.env`, puis `tunnel-config.sh` de nouveau.
+
+Valider l'ingress avec l'image du compose (aucune connexion a Cloudflare, aucun jeton requis) :
+
+```bash
+cd ~/infra
+docker compose run --rm --no-deps cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
+```
+
+Attendu : `Validating rules from /etc/cloudflared/config.yml` puis `OK`.
+
+### 4.5 — Creer les DNS
 
 ```bash
 cloudflared tunnel route dns spark-<prefix> <prefix>-n8n.<domain>
@@ -468,70 +497,21 @@ cloudflared tunnel route dns spark-<prefix> <prefix>-app.<domain>
 cloudflared tunnel route dns spark-<prefix> <prefix>-db.<domain>
 ```
 
-### 4.5 — Lancer cloudflared
-
-Test rapide (au premier plan) :
+### 4.6 — Lancer le connecteur
 
 ```bash
-cloudflared tunnel --config ~/.cloudflared/config-spark.yml run
+cd ~/infra
+docker compose up -d
+sleep 10
+docker compose ps cloudflared --format "table {{.Name}}\t{{.Image}}\t{{.Status}}"
+curl -s -m 5 http://127.0.0.1:2000/ready; echo
 ```
 
-Si tout repond, couper avec `Ctrl-C` et installer le service systemd :
+Attendu : `spark-cloudflared-1` `Up` (pas `Restarting`), puis `{"status":200,"readyConnections":4,...}` : `readyConnections` superieur a 0 est le signe que le tunnel est etabli. `docker compose logs cloudflared` montre `Registered tunnel connection` (quatre fois). Le port `127.0.0.1:2000` (`SPARK_TUNNEL_METRICS_PORT`) n'est joignable que depuis le serveur : c'est la sonde locale du tunnel.
 
-```bash
-exit   # quitter le shell spark
-```
+> ⚠️ **Un seul connecteur.** Le paquet apt peut avoir cree/active son propre `cloudflared.service` (config dans `/etc/cloudflared/`) ; deux connecteurs sur deux configs differentes se disputent le tunnel. Verifier qu'aucun service hote ne tourne : `systemctl list-unit-files | grep cloudflared` puis, s'il est `enabled`, `sudo systemctl disable --now cloudflared.service` (depuis le compte administrateur). Vecu chez une PME : l'installation avait fini sur le service du paquet, fonctionnel mais non documente.
 
-Puis, de retour dans le shell administrateur :
-
-```bash
-sudo cp /opt/spark/spark-kit/deploy/linux/systemd/spark-cloudflared.service \
-  /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now spark-cloudflared.service
-```
-
-Verifier :
-
-```bash
-sudo systemctl status spark-cloudflared.service
-```
-
-> ⚠️ **Un seul service cloudflared.** Le paquet apt (ou un `cloudflared service
-> install` lance par ailleurs) peut avoir cree/active son propre `cloudflared.service`
-> (config dans `/etc/cloudflared/`). Deux services = deux connecteurs sur des configs
-> potentiellement differentes. Verifier et ne garder qu'UN service actif :
->
-> ```bash
-> systemctl list-unit-files | grep cloudflared
-> # si cloudflared.service (paquet) est deja celui qui tourne avec la bonne config,
-> # le garder et NE PAS activer spark-cloudflared ; sinon :
-> sudo systemctl disable --now cloudflared.service
-> ```
->
-> (Vecu chez une PME : l'installation a fini sur le `cloudflared.service` du paquet —
-> fonctionnel, mais a documenter pour ne pas activer le doublon ensuite.)
-
-### 4.6 — Mettre a jour le .env
-
-```bash
-sudo -iu spark
-```
-
-Puis, une fois dans le shell `spark` :
-
-```bash
-nano ~/infra/.env
-```
-
-Completer :
-
-```
-SPARK_TUNNEL_ID=<UUID>
-SPARK_TUNNEL_CONFIG=/opt/spark/.cloudflared/config-spark.yml
-CF_API_TOKEN=<token avec scope Zone:DNS:Edit>
-CF_ZONE_ID=<ID de la zone parente>
-```
+> **Variante « cloudflared sur l'hote »** (binaire apt + unit systemd), si le site la prefere : laisser `COMPOSE_PROFILES` vide, `~/infra/scripts/tunnel-config.sh --host` (ecrit `config-spark.yml`, ingress vers `http://localhost:18080`), `SPARK_TUNNEL_CONFIG=/opt/spark/.cloudflared/config-spark.yml` dans le `.env`, puis `sudo cp /opt/spark/spark-kit/deploy/linux/systemd/spark-cloudflared.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now spark-cloudflared.service`. Jamais les deux a la fois. La bascule hote → conteneur d'un site existant est une fiche d'[`UPGRADES.md`](UPGRADES.md).
 
 ### 4.7 — Verifier l'acces HTTPS
 
@@ -556,7 +536,7 @@ exit   # quitter le shell spark
 
 ## Etape 5 — Durcir (recommande)
 
-Les etapes 5.1 et 5.2 se font depuis le compte **administrateur** (vous l'etes apres le `exit` de la fin de l'etape 4.7 ; sinon, `exit` d'abord), 5.3 et 5.4 en tant que `spark`.
+Les etapes 5.1 et 5.2 se font depuis le compte **administrateur** (vous l'etes apres le `exit` de la fin de l'etape 4.7 ; sinon, `exit` d'abord), 5.3 en tant que `spark`.
 
 ### 5.1 — Mises a jour automatiques
 
@@ -571,54 +551,39 @@ Configurer une application Access devant les 3 sous-domaines pour empecher l'acc
 
 Documentation detaillee : [`templates/docs/cf-access.md`](https://github.com/spark-kit/templates/blob/main/docs/cf-access.md).
 
-### 5.3 — Headers de securite Caddy
+### 5.3 — Verifier les en-tetes de securite et le CORS
 
-Repasser en `spark` pour editer les fichiers du site :
+Les en-tetes de [`SECURITY.md`](SECURITY.md) §2.2, le journal d'acces et le CORS NocoDB (§2.3) sont **poses par le Caddyfile du kit** (snippet `securite`, vhost `-db`) : rien a editer. Verifier, en tant que `spark` :
 
 ```bash
 sudo -iu spark
 ```
 
-Les valeurs de reference sont dans [`SECURITY.md`](SECURITY.md) §2.2. Les poser dans `~/infra/config/caddy/Caddyfile`, dans chaque bloc de vhost (sans `preload` sur HSTS : il engage tout le domaine de facon quasi irreversible) :
+```bash
+cd ~/infra
+(  set -a && . ./.env && set +a
+  for s in n8n app db; do
+    echo "=== ${SPARK_PREFIX}-$s.${SPARK_DOMAIN} ==="
+    curl -sI -m 15 "https://${SPARK_PREFIX}-$s.${SPARK_DOMAIN}/" \
+      | grep -iE "^(strict-transport|x-content-type|x-frame|referrer|permissions|access-control-allow-origin|server|x-powered-by)"
+  done
+)
+```
+
+Attendu, sur chaque vhost : `strict-transport-security: max-age=63072000; includeSubDomains`, `x-content-type-options: nosniff`, `x-frame-options` (`DENY` sur `-n8n` et `-db`, `SAMEORIGIN` sur `-app`), `referrer-policy`, `permissions-policy` ; **aucune** ligne `server:` ni `x-powered-by:` ; sur `-db`, `access-control-allow-origin: https://<prefix>-app.<domain>` (pas `*`). Derriere Cloudflare Access (5.2), la reponse est une redirection `302` : les en-tetes du site ne sont visibles qu'apres authentification, tester alors en local avec `-H "Host: ..."` sur `http://127.0.0.1:18080/`, comme le fait `selftest-install.sh --up`.
+
+Un vhost ajoute par le site dans `~/infra/config/caddy/sites.d/<nom>.caddy` recoit les memes en-tetes en important les snippets du kit (fichier en tabulations, format `caddy fmt`) :
 
 ```caddy
-header {
-	Strict-Transport-Security "max-age=63072000; includeSubDomains"
-	X-Content-Type-Options "nosniff"
-	X-Frame-Options "SAMEORIGIN"
-	Referrer-Policy "strict-origin-when-cross-origin"
-	Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
-	-X-Powered-By
-	-Server
+http://<nom>.<domain> {
+	import maintenance
+	import securite
+	header >X-Frame-Options "DENY"
+	reverse_proxy <service>:<port>
 }
 ```
 
-Le bloc est indente en **tabulations**, comme le reste du Caddyfile du kit (format `caddy fmt`). Valider **avant** de recharger, puis recharger Caddy (le repertoire est monte : l'edition en place est vue par le conteneur) :
-
-```bash
-cd ~/infra
-docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile
-docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
-```
-
-Le `validate` ecrit quelques lignes JSON de niveau `info` et se termine par `Valid configuration` ; c'est cette derniere ligne qui compte. Deux lignes de niveau `warn` sont **attendues et sans gravite** :
-
-- `No files matching import glob pattern` avec `"pattern":"/etc/caddy/sites.d/*.caddy"` : `sites.d/` ne contient encore aucun fichier `.caddy` (seul `.keep`), l'`import` du Caddyfile ne trouve rien. Elle apparait aussi a chaque `caddy reload` et dans `docker compose logs caddy` a chaque demarrage, et disparait au premier vhost pose dans `sites.d/` ;
-- `Caddyfile input is not formatted` : seulement si le bloc a ete colle en espaces au lieu de tabulations ; il fonctionne quand meme (`caddy fmt --overwrite` le remet au format).
-
-Toute autre ligne `warn` ou `error`, ou l'absence de `Valid configuration`, est une erreur a corriger avant le `reload`.
-
-> Cette edition rend le Caddyfile du site different de celui du kit : c'est attendu, et visible par `diff -ru ~/spark-kit/deploy/config ~/infra/config`.
-
-### 5.4 — CORS NocoDB
-
-Ajouter dans le service `nocodb` de `~/infra/compose.yml` (bloc `environment`) :
-
-```yaml
-NC_CORS_ALLOWED_ORIGINS: "https://<prefix>-app.<domain>"
-```
-
-Puis `docker compose up -d` pour appliquer.
+Puis `docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile` (attendu : `Valid configuration` ; l'avertissement `No files matching import glob pattern` disparait des qu'un fichier `.caddy` existe) et `docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile`. Ajouter le nom a l'ingress du tunnel (`SPARK_TUNNEL_EXTRA_HOSTS`, etape 4.4) et au DNS (4.5).
 
 ---
 
@@ -680,12 +645,14 @@ Attendre ~1 min, se reconnecter en SSH, puis :
 ```bash
 echo "=== Services systemd ==="
 systemctl is-active spark-compose.service && echo "compose: OK" || echo "compose: FAIL"
-systemctl is-active spark-cloudflared.service && echo "cloudflared: OK" || echo "cloudflared: FAIL"
 systemctl is-active spark-backup.timer spark-restore-test.timer
 
 echo "=== Containers ==="
 sudo -u spark docker compose -f /opt/spark/infra/compose.yml ps \
   --format "table {{.Name}}\t{{.Status}}"
+
+echo "=== Tunnel (connecteur) ==="
+curl -s -m 5 http://127.0.0.1:2000/ready; echo
 
 echo "=== Caddy → services (lu sous spark : .env est en 600) ==="
 sudo -u spark bash -c '
@@ -699,7 +666,7 @@ sudo -u spark bash -c '
       *) printf "  %-6s FAIL (%s : corps « %.60s »)\n" "-$1" "$2" "$body"; return 1 ;;
     esac
   }
-  probe n8n /healthz "\"status\":\"ok\""
+  probe n8n /healthz/readiness "\"status\":\"ok\""
   probe db  /api/v1/health "\"message\":\"OK\""
   echo "=== Tunnel HTTPS ==="
   curl -sI -m 10 "https://${SPARK_PREFIX}-n8n.${SPARK_DOMAIN}" | head -1
@@ -708,19 +675,20 @@ sudo -u spark bash -c '
 
 Attendu, bloc par bloc :
 
-- `=== Services systemd ===` : `active` puis `compose: OK` ; `active` puis `cloudflared: OK` ; puis la ligne des timers, qui affiche **`active` deux fois** (une par timer, `systemctl is-active` ecrit un etat par unit, il n'ecrit jamais `OK`) ;
-- `=== Containers ===` : 4 conteneurs `Up` (`spark-postgres-1` avec `(healthy)`) ;
+- `=== Services systemd ===` : `active` puis `compose: OK` ; puis la ligne des timers, qui affiche **`active` deux fois** (une par timer, `systemctl is-active` ecrit un etat par unit, il n'ecrit jamais `OK`) ;
+- `=== Containers ===` : 5 conteneurs `Up` (`spark-cloudflared-1` compris), les quatre autres `(healthy)` au bout de 2 minutes au plus ;
+- `=== Tunnel (connecteur) ===` : `{"status":200,"readyConnections":4,...}` (`readyConnections` > 0) ;
 - `=== Caddy → services ===` : `-n8n   OK` et `-db    OK` ;
 - `=== Tunnel HTTPS ===` : une ligne de statut, `HTTP/2 200` ou `HTTP/2 302` (Cloudflare Access).
 
-Tout autre texte (`FAIL`, `inactive`, `failed`, `Restarting`, `Exited`, une sonde `FAIL`) designe le service a verifier. Le bloc Caddy tourne sous `spark` parce que `.env` est en `600` : lance par l'administrateur, `. /opt/spark/infra/.env` echouerait en silence, les variables resteraient vides et la sonde interrogerait `Host: -n8n.` — d'ou le garde-fou `check-env.sh SPARK_PREFIX SPARK_DOMAIN` (valeur resolue, sans guillemets ni espaces). Si un service manque, verifier :
+Tout autre texte (`FAIL`, `inactive`, `failed`, `Restarting`, `Exited`, `unhealthy`, une sonde `FAIL`) designe le service a verifier. Le bloc Caddy tourne sous `spark` parce que `.env` est en `600` : lance par l'administrateur, `. /opt/spark/infra/.env` echouerait en silence, les variables resteraient vides et la sonde interrogerait `Host: -n8n.` — d'ou le garde-fou `check-env.sh SPARK_PREFIX SPARK_DOMAIN` (valeur resolue, sans guillemets ni espaces). Si un service manque, verifier :
 
 ```bash
 sudo systemctl status spark-compose.service
-sudo journalctl -u spark-cloudflared.service --since "5 min ago"
+sudo -u spark docker compose -f /opt/spark/infra/compose.yml logs --since 5m cloudflared n8n
 ```
 
-> **Avant l'etape 4** (test de reboot fait sur une stack sans tunnel, par exemple sur un serveur de recette) : `inactive` puis `cloudflared: FAIL`, et **rien** sous `=== Tunnel HTTPS ===` (la ligne reste vide : `curl` n'obtient aucune reponse, le domaine ne pointe nulle part) sont **normaux**, le service `spark-cloudflared` n'existe pas encore. Tout le reste (`active` et `compose: OK`, les deux timers `active`, 4 conteneurs `Up`, sondes `-n8n` et `-db` `OK`) doit etre la.
+> **Avant l'etape 4** (test de reboot fait sur une stack sans tunnel, par exemple sur un serveur de recette) : 4 conteneurs seulement (pas de `cloudflared`, le profil n'est pas actif), **rien** sous `=== Tunnel (connecteur) ===` (connexion refusee sur le port 2000, `curl` n'ecrit rien) ni sous `=== Tunnel HTTPS ===` (le domaine ne pointe nulle part) : **normal**. Tout le reste (`active` et `compose: OK`, les deux timers `active`, 4 conteneurs `Up (healthy)`, sondes `-n8n` et `-db` `OK`) doit etre la. Site en **variante hote** (unit `spark-cloudflared.service`) : ajouter `systemctl is-active spark-cloudflared.service` au premier bloc, attendu `active`.
 
 ---
 
@@ -735,15 +703,18 @@ sudo -iu spark
 ```bash
 cd ~/spark-kit && git pull --ff-only
 diff -u ~/infra/compose.yml ~/spark-kit/deploy/compose.yml
+diff -u ~/infra/compose.runners.yml ~/spark-kit/deploy/compose.runners.yml
 diff -u ~/infra/env.example ~/spark-kit/deploy/env.example
 diff -ru ~/infra/config ~/spark-kit/deploy/config
 diff -ru ~/infra/scripts ~/spark-kit/deploy/scripts
 ~/infra/scripts/pin-digests.sh --check ~/infra/compose.yml
 ```
 
-Lire le diff : les seules differences attendues sont celles que le site a faites lui-meme (en-tetes 5.3, CORS 5.4, fichiers `sites.d/`) ; les scripts ne se modifient pas sur le site, `diff -ru ~/infra/scripts ~/spark-kit/deploy/scripts` doit etre vide apres recopie (`cp ~/spark-kit/deploy/scripts/*.sh ~/infra/scripts/ && chmod +x ~/infra/scripts/*.sh`). Un changement de tag d'image est une **montee de version** : sauvegarde + test de restauration reussis et dates d'abord, puis `cp` du fichier concerne, `docker compose up -d`, verification. Jamais de `pull` sans l'avoir decide. Les units systemd se recopient de la meme facon (`sudo cp .../deploy/linux/systemd/spark-*.{service,timer} /etc/systemd/system/ && sudo systemctl daemon-reload`). Appliquer un changement de `compose.yml` ou du `.env` : `sudo systemctl reload spark-compose.service` (ou `cd ~/infra && docker compose up -d` dans le shell `spark`) — pas `start`, qui ne fait rien sur une unit active, jamais `restart`, qui coupe le site (etape 3).
+Lire le diff : les seules differences attendues sont celles que le site a faites lui-meme (fichiers `sites.d/`, drapeau `MAINTENANCE`) ; les scripts ne se modifient pas sur le site, `diff -ru ~/infra/scripts ~/spark-kit/deploy/scripts` doit etre vide apres recopie (`cp ~/spark-kit/deploy/scripts/*.sh ~/infra/scripts/ && chmod +x ~/infra/scripts/*.sh`). Un `.env` qui n'a pas une variable nouvelle d'`env.example` se complete par `~/infra/scripts/init-env.sh --sync ~/infra/.env` (ajoute les lignes manquantes a la fin, valeurs du gabarit, secrets nouveaux generes, n'y touche pas sinon), puis `check-env.sh`. **Un changement de tag d'image est une montee de version** : ne pas faire `cp` du compose et `up -d` a la volee, suivre la fiche correspondante d'[`UPGRADES.md`](UPGRADES.md) (test de restauration date, releve avant, drapeau de maintenance, sauvegarde, bascule du compose entier, verification, et retour arriere ecrit avant de commencer). Jamais de `pull` sans l'avoir decide. Les units systemd se recopient de la meme facon (`sudo cp .../deploy/linux/systemd/spark-*.{service,timer} /etc/systemd/system/ && sudo systemctl daemon-reload`). Appliquer un changement de `compose.yml` ou du `.env` : `sudo systemctl reload spark-compose.service` (ou `cd ~/infra && docker compose up -d` dans le shell `spark`) — pas `start`, qui ne fait rien sur une unit active, jamais `restart`, qui coupe le site (etape 3).
 
-> **Site installe avec une version anterieure du guide** (fichiers recopies a la main en heredoc) : l'arborescence etait `~/infra/docker-compose.yml`, `~/infra/config/Caddyfile` (fichier monte seul) et des images en tags flottants ; il n'y avait ni `env.example` ni `sites.d/`, et `scripts/` existait mais etait vide. Transition, stack en marche, dans le shell `spark` et depuis `~/infra`, apres une sauvegarde manuelle (`docker compose exec -T postgres pg_dumpall -U postgres | gzip > ~/pg_dumpall-avant-transition.sql.gz`) :
+> **Site installe avec le kit precedent** (n8n `2.19.4`, Caddyfile sans snippets, en-tetes poses a la main a l'ancienne etape 5.3, `NC_CORS_ALLOWED_ORIGINS` ajoute au compose a l'ancienne 5.4, cloudflared en unit systemd) : la montee est la fiche **n8n 2.19.4 → 2.49.6** d'[`UPGRADES.md`](UPGRADES.md), qui commence par la fiche Caddy (nouveau Caddyfile : les en-tetes et le CORS du site deviennent redondants, le fichier du kit les remplace tel quel, `caddy validate` puis `reload`), puis la bascule du compose entier (le bloc `NC_CORS_ALLOWED_ORIGINS` disparait avec lui, Caddy porte le CORS). Le tunnel reste sur l'hote tant que la fiche « cloudflared hote → conteneur » n'a pas ete jouee.
+
+> **Site installe avec une version encore anterieure du guide** (fichiers recopies a la main en heredoc) : l'arborescence etait `~/infra/docker-compose.yml`, `~/infra/config/Caddyfile` (fichier monte seul) et des images en tags flottants ; il n'y avait ni `env.example` ni `sites.d/`, et `scripts/` existait mais etait vide. Faire d'abord cette transition **a versions egales** (le compose du kit precedent, n8n `2.19.4`, est dans l'historique git du kit : `git -C ~/spark-kit log --oneline -- deploy/compose.yml`), puis la fiche n8n d'`UPGRADES.md` : jamais deux changements dans la meme fenetre. Transition, stack en marche, dans le shell `spark` et depuis `~/infra`, apres une sauvegarde manuelle (`docker compose exec -T postgres pg_dumpall -U postgres | gzip > ~/pg_dumpall-avant-transition.sql.gz`) :
 > 1. `mkdir -p ~/infra/scripts` (absent ou vide selon l'age du site), puis les copies de l'etape 2.2 (`compose.yml`, `env.example`, `config/caddy/`, `scripts/*.sh` sont des chemins nouveaux ; seul `config/postgres/init-db.sh` est remplace par la version du kit, sans effet : il ne rejoue jamais sur un volume existant) ;
 > 2. reporter dans `~/infra/config/caddy/Caddyfile` ce que le site avait ajoute a l'ancien `config/Caddyfile` (en-tetes 5.3, CORS). Valider le **nouveau** fichier avant qu'il soit monte (le conteneur en service ne voit encore que l'ancien `config/Caddyfile` : un `docker compose exec caddy caddy validate` validerait l'ancien), avec l'image Caddy que le nouveau compose fige et les variables du `.env` lues en sous-shell :
 >    ```bash
@@ -752,7 +723,7 @@ Lire le diff : les seules differences attendues sont celles que le site a faites
 >         "$(docker compose -f compose.yml config --images | grep '^caddy:')" \
 >         caddy validate --config /etc/caddy/Caddyfile )
 >    ```
->    attendu : `Valid configuration` ; puis reporter dans `compose.yml` les ajouts du site a `docker-compose.yml` (CORS 5.4) ;
+>    attendu : `Valid configuration` ; puis reporter dans `compose.yml` les ajouts du site a `docker-compose.yml` (le CORS NocoDB n'en fait plus partie : le Caddyfile du kit le porte) ;
 > 3. lire `diff -u docker-compose.yml compose.yml` : seuls les digests, les mineures figees des tags flottants (`postgres:16-alpine` → `16.16-alpine`, `caddy:2-alpine` → `2.11.9-alpine`), le montage du repertoire `./config/caddy` et les commentaires doivent differer (voir `CHANGELOG.md`) ; un autre ecart est une anomalie a comprendre avant d'aller plus loin. Les volumes nommes sont les memes (`spark_postgres_data`, ...), le projet reste `spark` : aucune donnee ne bouge ;
 > 4. `docker compose -f compose.yml up -d` (Compose recree les conteneurs dont la definition a change, les volumes sont conserves), sondes de l'etape 3, puis ranger **tout de suite** les anciens fichiers hors de `infra/` : `mv docker-compose.yml ~/docker-compose.yml.avant-transition && mv config/Caddyfile ~/Caddyfile.avant-transition` (le Caddyfile en service est desormais `config/caddy/Caddyfile`). Tant que `docker-compose.yml` et `compose.yml` coexistent, tout `docker compose` lance sans `-f` (le votre, et celui de l'**ancienne unit systemd au reboot**) affiche `Found multiple config files with supported names` et prend `compose.yml` : les etapes 1 a 3 utilisent `-f` pour cette raison, et aucun reboot ne doit avoir lieu entre la copie de l'etape 1 et ce rangement ;
 > 5. etape 2.3 (`check-env.sh` sur le `.env` existant, qui garde ses secrets ; ajouter a la main les variables nouvelles de `env.example` : `BACKUP_*`, `SPARK_ALERT_WEBHOOK`, `RESTORE_TEST_REQUIRE_CREDENTIAL`) ; etape 3 « Installer le service systemd » : recopier l'unit du kit (`sudo cp`, `daemon-reload`), l'unit deja active reste active et gagne `ExecReload` ; desormais un changement s'applique par `sudo systemctl reload spark-compose.service`, pas `restart` ; puis etape 3.b (sauvegardes).
@@ -792,6 +763,27 @@ Lire le diff : les seules differences attendues sont celles que le site a faites
 
 **Cause** : `X-Forwarded-Proto https` n'est pas propage.
 **Solution** : verifier que le Caddyfile contient `header_up X-Forwarded-Proto https` dans chaque bloc `reverse_proxy`.
+
+### n8n repond 503 `Database is not ready` (ou `/healthz/readiness` rouge) apres un incident Postgres
+
+**Cause** : Postgres a ete arrete, tue (OOM) ou redemarre ; n8n ne retablit **jamais** son pool de connexions tout seul (vecu chez une PME).
+**Solution** : `cd ~/infra && docker compose restart n8n` une fois Postgres `healthy`. Si Postgres a ete tue par le noyau (`dmesg | grep -i oom`), relire les plafonds memoire du `.env` (`*_MEM_LIMIT`, `N8N_HEAP_MB`).
+
+### n8n met longtemps a repondre apres une mise a jour
+
+**Cause** : migrations de base au premier demarrage de la nouvelle version (`docker compose logs n8n` : `Migrations in progress, please do NOT stop the process`). De l'ordre d'une minute, plus sur une grosse base.
+**Solution** : **attendre**, ne pas redemarrer (le healthcheck du kit accorde 2 minutes de grace). Un redemarrage pendant une migration est le pire des cas : la montee se fait avec la fiche d'[`UPGRADES.md`](UPGRADES.md), drapeau de maintenance pose.
+
+### Tout repond 503 `Maintenance en cours`
+
+**Cause** : le drapeau `~/infra/config/caddy/MAINTENANCE` existe (pose pour une intervention, oublie ensuite). Seul `/healthz/readiness` reste servi.
+**Solution** : `rm ~/infra/config/caddy/MAINTENANCE && cd ~/infra && docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile`, et `rm /opt/spark/MAINTENANCE` si les timers doivent reprendre.
+
+### `spark-cloudflared-1` est `Restarting`, ou le tunnel ne monte pas
+
+**Symptome** : `docker compose logs cloudflared` montre `Tunnel credentials file '/etc/cloudflared/<UUID>.json' doesn't exist or is not a file`, `permission denied`, ou `yaml: unmarshal errors`.
+**Causes** : `SPARK_TUNNEL_DIR` ne pointe pas sur le repertoire de `cloudflared tunnel create` ; `SPARK_TUNNEL_ID` ne correspond pas au `.json` present ; `SPARK_UID`/`SPARK_GID` ne sont pas ceux du proprietaire du repertoire (fichiers en `600`) ; `config.yml` edite a la main.
+**Solution** : `~/infra/scripts/tunnel-config.sh --check` (il nomme ce qui manque), corriger le `.env`, relancer `tunnel-config.sh`, puis `docker compose up -d`. Sans compte Cloudflare ni tunnel cree (serveur de recette), laisser `COMPOSE_PROFILES` vide : le service ne demarre pas et le reste de la stack n'en depend pas.
 
 ### UFW semble ne pas bloquer Docker
 

@@ -61,7 +61,8 @@ Spark se lit comme **3 briques empilables** : une solution technique qui tourne 
 ### Briques 2 & 3 — pour passer en production (optionnelles)
 
 ```
-+ Securite      CF Access + headers Caddy + CORS NocoDB     ~60-90 min   recommande des qu'il y a de la donnee reelle
++ Securite      CF Access (headers Caddy et CORS : poses     ~60-90 min   recommande des qu'il y a de la donnee reelle
+                par le kit)
 + Sauvegarde    backup 3-2-1 : dump + volumes + drill de    ~45-60 min   recommande (offsite = +~25 min)
                 restore + offsite rclone (provider au choix)
 ```
@@ -82,11 +83,11 @@ Spark se lit comme **3 briques empilables** : une solution technique qui tourne 
 
 | Composant | Role | Pourquoi celui-la |
 |-----------|------|-------------------|
-| **n8n** | Orchestration, workflows, connexion entre logiciels | Open source, 400+ connecteurs, code quand il faut |
+| **n8n** 2.49.6 | Orchestration, workflows, connexion entre logiciels | Open source, 400+ connecteurs, code quand il faut ; task runner interne (sidecar en option) |
 | **NocoDB** | Base de donnees visuelle (comme Airtable, en local) | Les non-devs peuvent creer des vues et des formulaires |
 | **PostgreSQL 16** | Base relationnelle (n8n + NocoDB, users separes) | Un seul backup couvre tout |
-| **Caddy** | Reverse proxy + serveur de fichiers | Route le trafic, sert les apps metier statiques |
-| **Cloudflare Tunnel** | Acces HTTPS distant | TLS gere par Cloudflare, zero cert a gerer, zero port ouvert |
+| **Caddy** 2.11 | Reverse proxy, serveur de fichiers, en-tetes de securite, journal d'acces, page de maintenance | Route le trafic, sert les apps metier statiques, `404` a tout `Host` inconnu |
+| **Cloudflare Tunnel** (`cloudflared` en conteneur) | Acces HTTPS distant | TLS gere par Cloudflare, zero cert a gerer, zero port ouvert ; le connecteur tourne dans le compose, fige par tag + digest |
 | **Claude Code** | Moteur de developpement | Construit les workflows, schemas, pages et scripts directement sur le serveur |
 
 Tout tourne dans Docker — via **Colima** sur macOS, nativement sur Linux. Claude Code s'installe sur la machine Spark elle-meme (pas sur un poste distant) et travaille directement dans le dossier Spark.
@@ -147,12 +148,12 @@ Le tunnel Cloudflare est le seul moyen d'obtenir du HTTPS propre sans infrastruc
 ┌──────────────────────────────────────────────┐
 │         Serveur de prototypage (Spark)        │
 │                                              │
-│   cloudflared (service systeme)              │
+│   cloudflared (conteneur, profil tunnel)     │
 │        │                                     │
-│        ▼ http://127.0.0.1:18080              │
-│   ┌─────────┐                                │
+│        ▼ http://caddy:80  (127.0.0.1:18080   │
+│   ┌─────────┐  = sondes locales seulement)   │
 │   │  Caddy   │ reverse proxy + file_server   │
-│   └────┬─────┘                               │
+│   └────┬─────┘ en-tetes, journal, 404, 503   │
 │        │                                     │
 │   -n8n │  -app (webhooks)  -app (/apps/*)    │
 │    ┌───▼──────────▸┐       ┌──────────────┐  │
@@ -171,7 +172,7 @@ Le tunnel Cloudflare est le seul moyen d'obtenir du HTTPS propre sans infrastruc
 │                 └───────────────────────┘    │
 │                                              │
 │   Volumes: n8n_data, nocodb_data,            │
-│   postgres_data, caddy_*                     │
+│   postgres_data, caddy_data/config/logs      │
 └──────────────────────────────────────────────┘
 ```
 
@@ -179,8 +180,9 @@ Le tunnel Cloudflare est le seul moyen d'obtenir du HTTPS propre sans infrastruc
 - Caddy ecoute sur `127.0.0.1` uniquement — pas d'acces reseau direct, tout passe par le tunnel
 - Cloudflare gere le TLS et les certificats — zero config cote serveur
 - Utilisateurs PostgreSQL separes (n8n, nocodb) avec mots de passe distincts
-- `restart: unless-stopped` → les conteneurs redemarrent apres un reboot (LaunchAgent sur macOS, systemd sur Linux)
-- Images Docker figees par version **et** digest sha256 dans `deploy/compose.yml` (pas de `latest`) ; relevees par `deploy/scripts/pin-digests.sh`
+- `restart: unless-stopped` → les conteneurs redemarrent apres un reboot (LaunchAgent Colima sur macOS, systemd sur Linux) ; cloudflared en `restart: always`, dans le meme compose
+- Images Docker figees par version **et** digest sha256 dans `deploy/compose.yml` (pas de `latest`) ; relevees par `deploy/scripts/pin-digests.sh` ; une montee de version suit une fiche d'[`UPGRADES.md`](UPGRADES.md) (banc sur copie, retour arriere ecrit et teste)
+- Plafond memoire et healthcheck sur chaque service (`docker compose ps` dit `healthy`) ; page de maintenance (503 partout, `Retry-After`) par un simple drapeau pendant les interventions
 - Sauvegardes chiffrees et test de restauration quotidien livres avec le kit (`deploy/scripts/backup.sh`, `restore-test.sh`)
 - Secrets metier dans le coffre n8n Credentials, pas dans des fichiers `.env`
 
@@ -207,7 +209,7 @@ Le tunnel Cloudflare est le seul moyen d'obtenir du HTTPS propre sans infrastruc
 
 | Repo | Contenu |
 |------|---------|
-| **spark-kit** (ce repo) | Meta : README, installation, `deploy/` (source unique de l'infra), SECURITY.md, INCIDENTS.md, ROADMAP.md, CHANGELOG.md |
+| **spark-kit** (ce repo) | Meta : README, installation, `deploy/` (source unique de l'infra), SECURITY.md, UPGRADES.md, INCIDENTS.md, ROADMAP.md, CHANGELOG.md |
 | **templates** | Methodologie, scripts setup, skills Claude Code, smoke test |
 
 **Sur le serveur**, les deux repos se retrouvent dans le dossier de travail (`~/spark/` sur macOS, `/opt/spark/` sur Linux) :
@@ -216,12 +218,15 @@ Le tunnel Cloudflare est le seul moyen d'obtenir du HTTPS propre sans infrastruc
 $SPARK_HOME/                          ← dossier de travail sur le serveur
 ├── spark-kit/                        ← clone de ce depot (read-only) : source unique de l'infra
 │   └── deploy/
-│       ├── compose.yml               la stack, images figees par tag + digest
+│       ├── compose.yml               la stack (profils tunnel, runners), images figees par tag + digest
+│       ├── compose.runners.yml       override : n8n en mode runner externe (option)
 │       ├── env.example               gabarit du .env
-│       ├── config/caddy/             Caddyfile + sites.d/
+│       ├── config/caddy/             Caddyfile (snippets securite, maintenance, 404) + sites.d/
 │       ├── config/postgres/          init-db.sh
-│       ├── scripts/                  init-env, backup, restore-test, pin-digests, selftest-install, mcp-n8n
-│       └── linux/systemd/            units et timers (compose, cloudflared, backup, restore-test)
+│       ├── scripts/                  init-env, check-env, backup, restore-test, restore-n8n, n8n-releve,
+│       │                             tunnel-config, pin-digests, selftest-install, mcp-n8n
+│       ├── linux/systemd/            units et timers (compose, backup, restore-test ; cloudflared en variante hote)
+│       └── macos/launchd/            plists (Colima ; cloudflared en variante hote)
 ├── templates/                        ← clone de spark-kit/templates (read-only)
 │   ├── setup-skeleton/               scripts de setup avances (securite)
 │   ├── crash-test/                   smoke test
@@ -233,7 +238,8 @@ $SPARK_HOME/                          ← dossier de travail sur le serveur
 │   ├── .env                          secrets (gitignore)
 │   ├── compose.yml                   copie de deploy/compose.yml
 │   ├── env.example                   copie de deploy/env.example
-│   ├── config/                       copie de deploy/config (caddy/, postgres/)
+│   ├── compose.runners.yml           copie de deploy/compose.runners.yml
+│   ├── config/                       copie de deploy/config (caddy/, postgres/) + drapeau caddy/MAINTENANCE
 │   ├── scripts/                      copie de deploy/scripts (dont mcp-n8n.sh)
 │   ├── apps/
 │   ├── logs/
@@ -241,7 +247,7 @@ $SPARK_HOME/                          ← dossier de travail sur le serveur
 └── discovery/                        ← fiches logiciel, PRD, questionnaires
 ```
 
-Regle : `infra/` ne contient que des copies de `deploy/` plus le `.env` et les fichiers propres au site (`sites.d/`, en-tetes). `diff -ru spark-kit/deploy/config infra/config` montre la derive ; une mise a jour du kit se fait par `cp`, jamais par edition parallele.
+Regle : `infra/` ne contient que des copies de `deploy/` plus le `.env` et les fichiers propres au site (`sites.d/`). La configuration cloudflared du site (`~/.cloudflared/config.yml`) est generee par `scripts/tunnel-config.sh` depuis le `.env`. `diff -ru spark-kit/deploy/config infra/config` montre la derive ; une mise a jour du kit se fait par `cp`, jamais par edition parallele ; un changement de version suit [`UPGRADES.md`](UPGRADES.md).
 
 ---
 
