@@ -48,43 +48,53 @@ Couverture minimum :
 
 ### 2.2 Headers de securite cote Caddy
 
-Sur **chaque vhost** du Caddyfile du site (`infra/config/caddy/Caddyfile`, copie de `deploy/config/caddy/Caddyfile` du kit), le block `header { ... }` suivant est obligatoire. **Le Caddyfile du kit ne le porte pas encore** : c'est le site qui l'ajoute (guide Linux, etape 5.3), ce qui rend son Caddyfile different de celui du kit (ecart attendu dans `diff -ru`). Un lot suivant du kit l'apportera sous forme de snippet `(securite)` importe par chaque vhost ; le site n'aura alors plus rien a poser. Sans `preload` sur HSTS : il engage tout le domaine de facon quasi irreversible. Valider (`caddy validate`) avant de recharger :
+**Source unique : le snippet `(securite)` de [`deploy/config/caddy/Caddyfile`](deploy/config/caddy/Caddyfile)**, importe par chaque vhost du kit (`-n8n`, `-app`, `-db`) et par chaque vhost que le site ajoute dans `sites.d/*.caddy` (`import securite`). Le site n'a **rien a poser a la main** ; un Caddyfile de site qui differe du kit sur ces en-tetes est une derive (`diff -ru spark-kit/deploy/config infra/config`). Valeurs de reference, telles que le snippet les ecrit (sans `preload` sur HSTS : il engage tout le domaine de facon quasi irreversible) :
 
 ```caddy
 header {
 	Strict-Transport-Security "max-age=63072000; includeSubDomains"
 	X-Content-Type-Options "nosniff"
-	X-Frame-Options "SAMEORIGIN"
 	Referrer-Policy "strict-origin-when-cross-origin"
 	Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
 	-X-Powered-By
 	-Server
+	-Via
 }
 ```
 
+`-Via` retire le `Via: 1.1 Caddy` que `reverse_proxy` ajoute a chaque reponse proxifiee : meme empreinte que `Server`, meme traitement.
+
+`X-Frame-Options` est pose par vhost, hors du snippet : `DENY` sur `-n8n` et `-db` (jamais dans une iframe), `SAMEORIGIN` sur `-app` (les apps du site peuvent s'encadrer entre elles). Il est ecrit avec le prefixe `>` (apres la reponse de l'application) : n8n envoie son propre `X-Frame-Options`, sans `>` le navigateur recevait deux valeurs.
+
+**Les reponses d'erreur aussi.** Caddy n'applique pas un bloc `header` differe (toute suppression `-X` le differe) a une reponse d'erreur : un `404` de `file_server` (`-app`, `/apps/<absent>`) ou un `502` sans amont sortait avec `Server: Caddy` et sans ces en-tetes. Le snippet `(securite)` importe donc dans un `handle_errors` le snippet `(erreurs)` : les memes en-tetes, **plus `X-Frame-Options: DENY`** (le `>X-Frame-Options` du vhost ne s'applique pas dans `handle_errors`, et une page d'erreur ne s'encadre jamais), corps `<code> <libelle>` ; l'attrape-tout `404` des `Host` inconnus porte les memes en-tetes et le meme `DENY` : **aucune reponse du kit, erreur comprise, ne porte `Server` ni `Via`, et toute erreur porte `X-Frame-Options: DENY`**. `selftest-install.sh --up` le verifie sur le `404` d'un `Host` inconnu et sur un `404` de `file_server`.
+
 Notes :
 - `auto_https off` (TLS gere par Cloudflare) implique que Caddy ecoute en HTTP — HSTS est neanmoins servi car Cloudflare en re-emet la version HTTPS au browser final.
-- Pas de CSP dans le bloc standard : NocoDB et n8n font de l'inline-script et de l'eval, un CSP strict casse leur UI. A ajouter en mode `Content-Security-Policy-Report-Only` si besoin de tester.
-- `-X-Powered-By` retire le header `Express` envoye par NocoDB (fingerprinting).
+- Pas de CSP dans le bloc standard : NocoDB et n8n font de l'inline-script et de l'eval, un CSP strict casse leur UI. A ajouter en mode `Content-Security-Policy-Report-Only` si besoin de tester, dans un fichier `sites.d/` ou par vhost, pas dans le snippet.
+- `-X-Powered-By` retire le header `Express` envoye par NocoDB (fingerprinting) ; les suppressions different le bloc entier, les valeurs du snippet ecrasent donc celles de l'application.
+- Le meme snippet active le **journal d'acces JSON** (`/var/log/caddy/access.log`, volume `caddy_logs`, rotation 50 Mo x 10).
+- Un `Host` inconnu recoit `404` (bloc attrape-tout `http://`), plus jamais `200` et un corps vide.
+- `trusted_proxies static private_ranges` + `trusted_proxies_strict` (options globales) : Caddy conserve le `X-Forwarded-For` ecrit par Cloudflare quand la requete vient de cloudflared (reseau compose ou `127.0.0.1`) ; sans cela il le remplace par l'IP de cloudflared et n8n (`N8N_PROXY_HOPS=2`) attribue la meme IP a tous les visiteurs. `strict` fait de `request.client_ip` (journal d'acces) l'element le plus a **droite** de l'en-tete qui n'est pas un proxy de confiance, le meme que n8n retient avec `2` ; sans `strict`, c'etait l'element le plus a gauche, forgeable par le visiteur, et le journal pouvait contredire n8n (mesure dans `UPGRADES.md`). Un client sur une plage privee peut forger cet en-tete : c'est pourquoi Caddy n'est joignable que sur `127.0.0.1` et par le tunnel. La reference pour confirmer l'IP d'un visiteur reste `Cf-Connecting-Ip`, ecrit par Cloudflare.
 
-Verification runtime :
+Verification runtime (via le tunnel, ou en local avec `-H "Host: ..."` sur `http://127.0.0.1:18080`) :
 ```bash
 curl -sSI https://acme-n8n.acme.example/ | \
-  grep -iE "strict-transport|x-frame|x-content-type|referrer-policy|permissions-policy"
+  grep -iE "strict-transport|x-frame|x-content-type|referrer-policy|permissions-policy|^server|x-powered-by"
 ```
+Attendu : les cinq en-tetes, une seule valeur chacun, et ni `Server` ni `X-Powered-By` ; meme chose sur un `404` (`curl -sSI -H "Host: inconnu.acme.example" http://127.0.0.1:18080/`, `X-Frame-Options` excepte : il est pose par vhost). `deploy/scripts/selftest-install.sh --up` fait ce controle sur chaque vhost du kit et sur deux reponses `404`.
 
 ### 2.3 Override CORS sur NocoDB
 
 NocoDB renvoie `Access-Control-Allow-Origin: *` par defaut sur tous les paths. Couple a un PAT qui leakerait, un site malveillant pourrait exploiter NocoDB via XHR depuis le browser de la victime.
 
-Sur le vhost `acme-db.acme.example`, ajouter dans le block `header` :
+**Pose par le kit** sur le vhost `-db` du Caddyfile (`deploy/config/caddy/Caddyfile`, source unique), le site n'a rien a ajouter :
 
 ```caddy
-Access-Control-Allow-Origin "https://{$SPARK_PREFIX}-app.{$SPARK_DOMAIN}"
-Vary "Origin"
+header >Access-Control-Allow-Origin "https://{$SPARK_PREFIX}-app.{$SPARK_DOMAIN}"
+header >Vary "Origin"
 ```
 
-Effet : seul le frontend Spark (`acme-app.*`) peut consommer l'API NocoDB depuis un browser. Toute autre origine recoit une `Allow-Origin` mismatch — le browser bloque la lecture de la reponse.
+Effet : seul le frontend Spark (`acme-app.*`) peut consommer l'API NocoDB depuis un browser. Toute autre origine recoit une `Allow-Origin` mismatch — le browser bloque la lecture de la reponse. Le `>` ecrit l'en-tete apres la reponse de NocoDB (il remplace le `*`).
 
 Le CLI `nocodb.sh` n'est pas affecte (CORS est une protection navigateur, pas serveur).
 
@@ -108,8 +118,9 @@ Un monitoring qui partage le compose des services surveilles ne peut pas detecte
 ## 3. Defenses recommandees (selon le contexte)
 
 - **Cloudflare WAF + Rate Limiting** sur la zone : rate limit serre sur `/login`, `/rest/login`, paths d'auth. Free tier suffisant pour les regles de base.
-- **Logs d'acces Caddy persistes** : ajouter un volume `caddy_logs:/var/log/caddy` + directive `log { output file ... }` dans chaque vhost. Permet l'investigation post-incident.
-- **Rotation des secrets infra** tous les 90 jours : `NOCODB_API_TOKEN`, `N8N_API_KEY`, `CF_API_TOKEN`. Le `.env` contient les valeurs courantes ; un changement necessite `docker compose up -d` pour propager.
+- **Logs d'acces Caddy persistes** : fournis par le kit (volume `caddy_logs`, `log` JSON dans le snippet `(securite)`, donc sur chaque vhost qui l'importe). Lecture : `docker compose exec caddy sh -c 'tail -n 100 /var/log/caddy/access.log' | jq -r '[.ts, .request.host, .request.method, .request.uri, .status] | @tsv'`. Permet l'investigation post-incident (endpoint x referer x utilisateur).
+- **Rotation des secrets infra** tous les 90 jours : `NOCODB_API_TOKEN`, `N8N_API_KEY`, `CF_API_TOKEN`, `N8N_RUNNERS_AUTH_TOKEN` (si le profil `runners` est actif : n8n et le sidecar le lisent tous deux au demarrage). Le `.env` contient les valeurs courantes ; un changement necessite `docker compose up -d` (ou `systemctl reload spark-compose.service`) pour propager.
+- **Tunnel en conteneur** (profil `tunnel`, defaut des guides) : cloudflared tourne sans root (uid de l'utilisateur `spark`), sans shell, sans auto-mise a jour (`--no-autoupdate`, version figee par tag + digest), monte le repertoire des identifiants en **lecture seule**, et vise `http://caddy:80` sur le reseau compose : le port hote `127.0.0.1:18080` ne sert plus qu'aux sondes locales. Le repertoire `SPARK_TUNNEL_DIR` (`<id>.json` = secret) reste en `700`/`600`, proprietaire `spark`.
 - **Sauvegardes chiffrees et testees** : `deploy/scripts/backup.sh` chiffre `.env` et la config n8n (`age`, cle privee hors machine) ; `deploy/scripts/restore-test.sh` prouve chaque jour que le dernier dump se restaure et qu'un identifiant n8n se dechiffre. La cle privee `age` et `N8N_ENCRYPTION_KEY` vont dans le coffre de l'entreprise, jamais dans la sauvegarde en clair.
 - **FileVault** active sur le Mac qui heberge le site (chiffrement disque). Le `.env` est en clair sur le disque, FileVault protege en cas de vol physique.
 - **Permissions reduites du CF_API_TOKEN** : `Zone:DNS:Edit` suffit pour creer les enregistrements du tunnel (`cloudflared tunnel route dns`, etape 4 des guides) et pour les scripts d'automatisation DNS prevus par la ROADMAP (`tunnel-up.sh` / `tunnel-down.sh`, pas encore dans le kit). Ne jamais utiliser un token global Account.
@@ -208,13 +219,13 @@ Liste de findings reutilisables pour l'audit. Severite indicative — a affiner 
 | FX-01 | 🔴 | Webhook n8n public sans auth expose donnees business | curl anonyme `/webhook/api/X` → 200 + JSON |
 | FX-02 | 🔴 | Frontends statiques accessibles sans auth | curl `/crm/`, `/wms/`, etc. → 200 sans Access |
 | FX-03 | 🔴 | Page login n8n/NocoDB sans CF Access devant | curl `/` → 200 + HTML login |
-| FX-04 | 🟠 | Headers securite manquants | `curl -I` sans HSTS / X-Frame / etc. |
-| FX-05 | 🟠 | CORS NocoDB ouvert | `Access-Control-Allow-Origin: *` dans response |
+| FX-04 | 🟠 | Headers securite manquants (Caddyfile du site qui n'importe pas `securite`, ou derive du kit) | `curl -I` sans HSTS / X-Frame / etc. |
+| FX-05 | 🟠 | CORS NocoDB ouvert (vhost `-db` qui ne vient pas du kit) | `Access-Control-Allow-Origin: *` dans response |
 | FX-06 | 🟠 | Secrets `.env` en clair sur Mac non chiffre | `ls infra/.env` + FileVault status off |
 | FX-07 | 🟠 | `CF_API_TOKEN` scope trop large | Token avec scope autre que `Zone:DNS:Edit` |
 | FX-08 | 🟠 | Pas de rate limiting CF | aucune rule sur Zone dans dashboard CF |
-| FX-09 | 🟡 | Logs d'acces Caddy non persistes | `docker logs caddy-*` vide ou non monte vers volume |
-| FX-10 | 🟡 | Fingerprinting `X-Powered-By: Express` cote NocoDB | header present dans response |
+| FX-09 | 🟡 | Logs d'acces Caddy non persistes (volume `caddy_logs` absent : compose anterieur au kit courant) | `docker compose exec caddy test -s /var/log/caddy/access.log` echoue |
+| FX-10 | 🟡 | Fingerprinting `X-Powered-By: Express` cote NocoDB (snippet `securite` absent) | header present dans response |
 | FX-11 | 🟡 | Pas de 2FA n8n | n8n CE n'a pas — CF Access est le 2FA |
 
 ---

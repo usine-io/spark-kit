@@ -1,18 +1,30 @@
 [Unit]
-Description=Spark Cloudflare Tunnel
-After=network-online.target
+Description=Spark Cloudflare Tunnel (variante : connecteur sur l'hote ; par defaut il tourne dans le compose, profil tunnel)
+After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=spark
 Group=spark
-ExecStart=/usr/bin/cloudflared tunnel --config /opt/spark/.cloudflared/config-spark.yml run
+# Un seul connecteur a la fois. La garde (scripts/cloudflared-host-guard.sh, copie du kit dans
+# /opt/spark/infra/scripts/) refuse si le profil `tunnel` est pose dans /opt/spark/infra/.env ou si
+# un conteneur spark-cloudflared-N existe, MEME ARRETE (au reboot, Docker le relance apres cette
+# unit : verifier seulement « il tourne » laissait les deux connecteurs demarrer ensemble).
+# ExecCondition= et non ExecStartPre= : un refus laisse l'unit `inactive` (resultat exec-condition)
+# sans la marquer en echec, donc sans boucle Restart= qui lui ferait prendre la main des que le
+# conteneur s'arrete. La cause est dans le journal : journalctl -u spark-cloudflared.service.
+# Sorties dans le journal (pas dans des fichiers) : c'est le seul canal ou le refus de la garde est
+# rattache a l'unit a coup sur (un message envoye par systemd-cat ou logger depuis un processus aussi
+# bref n'est pas toujours attribue a l'unit par journald, verifie sur le banc du kit).
+# Retirer le conteneur : docker compose --profile tunnel stop cloudflared && docker compose --profile tunnel rm -f cloudflared
+ExecCondition=/opt/spark/infra/scripts/cloudflared-host-guard.sh
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --config /opt/spark/.cloudflared/config-spark.yml run
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
-StandardOutput=append:/opt/spark/infra/logs/cloudflared.log
-StandardError=append:/opt/spark/infra/logs/cloudflared.err
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target

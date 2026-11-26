@@ -3,18 +3,28 @@
 #
 # Usage : selftest-install.sh [--up] [--keep]
 #   (defaut) copie deploy/ comme le guide le demande, cree un .env de test, puis :
-#            `docker compose config` sans variable manquante, `caddy validate` avec sites.d/ vide
-#            puis avec un fichier, verifie que chaque chemin monte existe (test -f), puis teste
-#            check-env.sh (valeurs vides, espaces, un caractere, variable exportee mais ligne absente),
-#            la priorite environnement > .env de lib.sh, le verrou d'execution, et l'alerte de
-#            backup.sh quand il s'arrete avant d'avoir commence (.env absent : ligne ALERTE ;
-#            variable manquante : ligne ALERTE + POST recu par un webhook local).
+#            `docker compose config` sans variable manquante (sans profil, puis avec les profils
+#            tunnel et runners et l'override compose.runners.yml), `caddy validate` avec sites.d/
+#            vide puis avec un fichier, `caddy fmt --diff` sans ecart, verifie que chaque chemin
+#            monte existe (test -f), puis teste check-env.sh (valeurs vides, espaces, un caractere,
+#            variable exportee mais ligne absente, coherence des profils : tunnel sans config.yml,
+#            runners sans override et l'inverse), init-env.sh --sync (variable nouvelle et ligne
+#            commentee #COMPOSE_FILE ajoutees, rejeu « deja a jour »), la priorite environnement >
+#            .env de lib.sh, le verrou d'execution, l'alerte de backup.sh quand il s'arrete avant
+#            d'avoir commence (.env absent : ligne ALERTE ; variable manquante : ligne ALERTE + POST
+#            recu par un webhook local), tunnel-config.sh (config ecrite depuis le .env, --check), et
+#            les scripts passes a shellcheck s'il est installe (sinon une ligne INFO, pas un echec).
 #   --up     demarre ensuite la stack sous le projet compose `spark-selftest` (port hote 18090),
-#            attend que -n8n et -db repondent via Caddy avec un MARQUEUR dans le corps (Caddy repond
-#            200 et corps vide a tout Host inconnu : un 200 seul ne prouve rien), puis, si `age` est
-#            installe, joue backup.sh et restore-test.sh sur cette stack et verifie que le nombre de
-#            volumes Docker anonymes est le meme avant et apres (restore-test.sh ne laisse rien),
-#            puis detruit tout.
+#            verifie que cloudflared et runners ne demarrent PAS sans profil, attend que -n8n
+#            (/healthz/readiness) et -db repondent via Caddy avec un MARQUEUR dans le corps, que les
+#            quatre services deviennent `healthy`, qu'un Host inconnu recoit 404, que les en-tetes de
+#            securite sont la sur chaque vhost (et le CORS de -db) ET sur les reponses d'erreur (404
+#            de l'attrape-tout, 404 de file_server sur -app : sans `Server: Caddy`), que le drapeau
+#            MAINTENANCE donne 503 partout puis se retire, que le journal d'acces s'ecrit, que la
+#            config cloudflared generee passe `cloudflared tunnel ingress validate`, que le sidecar
+#            runners demarre avec son profil ; puis, si `age` est installe, joue backup.sh et
+#            restore-test.sh sur cette stack et verifie que le nombre de volumes Docker anonymes est
+#            le meme avant et apres (restore-test.sh ne laisse rien), puis detruit tout.
 #   --keep   conserve le repertoire temporaire (affiche) pour inspection.
 # Sortie 0 si tout passe, 1 sinon. Ne touche pas a une stack `spark` deja presente sur la machine.
 # Se lance depuis le DEPOT DU KIT (spark-kit/deploy/scripts/) : la copie dans infra/scripts/ n'a pas
@@ -38,7 +48,7 @@ for arg in "$@"; do
   case "$arg" in
     --up) up=1 ;;
     --keep) keep=1 ;;
-    -h|--help) sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    -h|--help) sed -n '2,/^[^#]/{/^#/p;}' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) printf 'option inconnue : %s\n' "$arg" >&2; exit 1 ;;
   esac
 done
@@ -55,7 +65,7 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/spark-selftest-XXXXXX")"
 INFRA="$work/infra"
 cleanup() {
   if [ "$up" -eq 1 ] && [ -f "$INFRA/compose.yml" ]; then
-    (cd "$INFRA" && spark_compose -p "$PROJECT" down -v --remove-orphans >/dev/null 2>&1) || true
+    (cd "$INFRA" && COMPOSE_PROFILES=tunnel,runners spark_compose -p "$PROJECT" -f compose.yml -f compose.runners.yml down -v --remove-orphans >/dev/null 2>&1) || true
   fi
   if [ "$keep" -eq 1 ]; then
     printf 'repertoire conserve : %s\n' "$work"
@@ -68,6 +78,7 @@ trap cleanup EXIT
 printf '== 1. Copies du guide (source : %s/deploy)\n' "$KIT_DIR"
 mkdir -p "$INFRA"/{apps,logs,backups,scripts}
 cp "$KIT_DIR/deploy/compose.yml" "$INFRA/compose.yml"
+cp "$KIT_DIR/deploy/compose.runners.yml" "$INFRA/compose.runners.yml"
 cp "$KIT_DIR/deploy/env.example" "$INFRA/env.example"
 cp -R "$KIT_DIR/deploy/config" "$INFRA/"
 chmod +x "$INFRA/config/postgres/init-db.sh"
@@ -75,7 +86,7 @@ cp "$KIT_DIR"/deploy/scripts/*.sh "$INFRA/scripts/"
 chmod +x "$INFRA"/scripts/*.sh
 "$INFRA/scripts/init-env.sh" --prefix "$PREFIX" --domain "$DOMAIN" --port "$PORT" "$INFRA/.env" >/dev/null
 # Un bind mount vers un fichier absent fait creer un REPERTOIRE vide par Docker : test -f, pas -e.
-for f in compose.yml env.example .env config/postgres/init-db.sh config/caddy/Caddyfile config/caddy/sites.d/.keep; do
+for f in compose.yml compose.runners.yml env.example .env config/postgres/init-db.sh config/caddy/Caddyfile config/caddy/sites.d/.keep; do
   if [ -f "$INFRA/$f" ]; then ok "$f present"; else fail "$f absent"; fi
 done
 if [ -d "$INFRA/apps" ]; then ok "apps/ present"; else fail "apps/ absent"; fi
@@ -93,6 +104,18 @@ if out="$(spark_compose -p "$PROJECT" config -q 2>&1)"; then
 else
   fail "compose config : $out"
 fi
+# Profils et override : tout doit se resoudre aussi (variables du tunnel et du sidecar dans env.example).
+if out="$(COMPOSE_PROFILES=tunnel,runners spark_compose -p "$PROJECT" -f compose.yml -f compose.runners.yml config -q 2>&1)" \
+   && ! printf '%s' "$out" | grep -qi 'variable is not set'; then
+  ok "compose config valide avec les profils tunnel + runners et compose.runners.yml"
+else
+  fail "compose config (profils + override) : $out"
+fi
+services="$(spark_compose -p "$PROJECT" config --services 2>/dev/null | sort | tr '\n' ' ')"
+case " $services" in
+  *" cloudflared "*|*" runners "*) fail "sans profil, cloudflared/runners ne doivent pas etre actifs : $services" ;;
+  *) ok "sans profil : $services" ;;
+esac
 
 printf '== 3. env.example tel quel (toute variable lue par le compose doit y figurer)\n'
 mkdir -p "$work/envcheck/config" && cp "$KIT_DIR/deploy/compose.yml" "$work/envcheck/" \
@@ -113,13 +136,39 @@ caddy_validate() {
     "$caddy_image" caddy validate --config /etc/caddy/Caddyfile 2>&1
 }
 if out="$(caddy_validate)"; then ok "Caddyfile valide, sites.d/ vide"; else fail "Caddyfile (sites.d vide) : $out"; fi
-printf 'http://%s-selftest.%s {\n    respond "selftest" 200\n}\n' "$PREFIX" "$DOMAIN" > "$INFRA/config/caddy/sites.d/selftest.caddy"
-if out="$(caddy_validate)"; then ok "Caddyfile valide, un fichier dans sites.d/"; else fail "Caddyfile (sites.d/selftest.caddy) : $out"; fi
+# Un vhost de site, ecrit comme le guide le demande : il importe les deux snippets du kit.
+printf 'http://%s-selftest.%s {\n\timport maintenance\n\timport securite\n\trespond "selftest" 200\n}\n' "$PREFIX" "$DOMAIN" > "$INFRA/config/caddy/sites.d/selftest.caddy"
+if out="$(caddy_validate)"; then ok "Caddyfile valide, un fichier dans sites.d/ (import des snippets)"; else fail "Caddyfile (sites.d/selftest.caddy) : $out"; fi
+# Format caddy fmt : seul le diff compte (le code de sortie varie selon la version).
+fmt_diff="$(docker run --rm -v "$INFRA/config/caddy:/etc/caddy:ro" "$caddy_image" caddy fmt --diff /etc/caddy/Caddyfile 2>&1 | grep -E '^[+-]' || true)"
+if [ -z "$fmt_diff" ]; then ok "Caddyfile au format caddy fmt"; else fail "Caddyfile pas au format caddy fmt :"; printf '%s\n' "$fmt_diff" | head -5 >&2; fi
 
-printf '== 5. Scripts : syntaxe bash\n'
+printf '== 5. Scripts : syntaxe bash (et shellcheck s il est installe)\n'
 for s in "$INFRA"/scripts/*.sh; do
   if bash -n "$s"; then ok "$(basename "$s")"; else fail "$(basename "$s") : erreur de syntaxe"; fi
 done
+if command -v shellcheck >/dev/null 2>&1; then
+  if out="$(cd "$KIT_DIR" && shellcheck -x deploy/scripts/*.sh deploy/config/postgres/init-db.sh 2>&1)"; then
+    ok "shellcheck sans remarque"
+  else
+    fail "shellcheck :"; printf '%s\n' "$out" | head -20 >&2
+  fi
+else
+  printf '  INFO  shellcheck absent : non joue (apt install shellcheck / brew install shellcheck)\n'
+fi
+# Plists launchd : XML bien forme une fois __HOME__ substitue (un `--` dans un commentaire XML suffit
+# a les rendre illisibles par launchd ; plutil n'existe que sur macOS, plistlib partout ou python3 est).
+if command -v python3 >/dev/null 2>&1; then
+  for p in "$KIT_DIR"/deploy/macos/launchd/*.plist; do
+    if sed "s|__HOME__|/Users/acme|g" "$p" | python3 -c 'import plistlib,sys; d=plistlib.loads(sys.stdin.buffer.read()); sys.exit(0 if d.get("Label") and d.get("ProgramArguments") else 1)' 2>/dev/null; then
+      ok "$(basename "$p") : plist valide (Label, ProgramArguments)"
+    else
+      fail "$(basename "$p") : plist invalide (XML mal forme ou cle manquante)"
+    fi
+  done
+else
+  printf '  INFO  python3 absent : plists launchd non verifies\n'
+fi
 
 printf '== 6. check-env.sh : valeur resolue, sans guillemets ni espaces (cas T19)\n'
 # Le .env genere est complet ; puis des copies ou SPARK_PREFIX est vide, fait d'espaces, long d'un
@@ -144,6 +193,34 @@ grep -v '^SPARK_PREFIX=' "$INFRA/.env" > "$work/env-case"
 rc=0; out="$(SPARK_PREFIX=exportee "$INFRA/scripts/check-env.sh" --env "$work/env-case" SPARK_PREFIX 2>&1)" || rc=$?
 if [ "$rc" -eq 1 ]; then ok "SPARK_PREFIX exportee dans le shell, ligne absente -> code 1 ($out)"; else fail "SPARK_PREFIX exportee, ligne absente -> code $rc, attendu 1 ($out)"; fi
 rm -f "$work/env-case"
+# Coherence des profils (mode par defaut seulement) : tunnel sans config.yml, runners sans override, override sans profil.
+profile_case() {  # libelle, lignes a substituer (COMPOSE_PROFILES, COMPOSE_FILE, SPARK_TUNNEL_*), code attendu, motif attendu
+  local label="$1" lines="$2" want="$3" motif="$4" f="$work/env-prof" rc=0 out
+  grep -v -E '^#?(COMPOSE_PROFILES|COMPOSE_FILE|SPARK_TUNNEL_ID|SPARK_TUNNEL_DIR)=' "$INFRA/.env" > "$f"
+  printf '%s\n' "$lines" >> "$f"
+  out="$("$INFRA/scripts/check-env.sh" --env "$f" 2>&1)" || rc=$?
+  case "$rc:$out" in "$want":*"$motif"*) ok "profils : $label -> code $rc" ;; *) fail "profils : $label -> code $rc (attendu $want, motif « $motif »), sortie : $(printf '%s' "$out" | grep COMPOSE_PROFILES)" ;; esac
+}
+profile_case "aucun profil" "COMPOSE_PROFILES=" 0 "COMPOSE_PROFILES coherent (aucun profil)"
+profile_case "tunnel sans SPARK_TUNNEL_DIR" "COMPOSE_PROFILES=tunnel" 1 "profil tunnel sans SPARK_TUNNEL_ID ou SPARK_TUNNEL_DIR"
+profile_case "tunnel sans config.yml" "$(printf 'COMPOSE_PROFILES=tunnel\nSPARK_TUNNEL_ID=12345678-1234-4123-8123-123456789abc\nSPARK_TUNNEL_DIR=%s' "$work")" 1 "sans $work/config.yml"
+printf '# selftest\n' > "$work/config.yml"
+profile_case "tunnel avec config.yml" "$(printf 'COMPOSE_PROFILES=tunnel\nSPARK_TUNNEL_ID=12345678-1234-4123-8123-123456789abc\nSPARK_TUNNEL_DIR=%s' "$work")" 0 "COMPOSE_PROFILES coherent (tunnel)"
+rm -f "$work/config.yml"
+profile_case "runners sans COMPOSE_FILE" "COMPOSE_PROFILES=runners" 1 "profil runners sans COMPOSE_FILE"
+profile_case "COMPOSE_FILE sans profil runners" "$(printf 'COMPOSE_PROFILES=\nCOMPOSE_FILE=compose.yml:compose.runners.yml')" 1 "sans le profil runners"
+profile_case "runners avec COMPOSE_FILE" "$(printf 'COMPOSE_PROFILES=runners\nCOMPOSE_FILE=compose.yml:compose.runners.yml')" 0 "COMPOSE_PROFILES coherent (runners)"
+rm -f "$work/env-prof"
+# init-env.sh --sync : ajoute les variables nouvelles ET la ligne commentee #COMPOSE_FILE a un .env qui ne l'a pas.
+grep -v -E '^#?(COMPOSE_FILE|NOCODB_MEM_LIMIT)=' "$INFRA/.env" > "$work/env-sync"
+if out="$("$INFRA/scripts/init-env.sh" --sync "$work/env-sync" 2>&1)" && grep -q '^NOCODB_MEM_LIMIT=900m$' "$work/env-sync" \
+   && grep -q '^#COMPOSE_FILE=compose.yml:compose.runners.yml$' "$work/env-sync" && [ "$(grep -c '^#\{0,1\}COMPOSE_FILE=' "$work/env-sync")" -eq 1 ]; then
+  ok "init-env.sh --sync : $out"
+else
+  fail "init-env.sh --sync : « $out » (NOCODB_MEM_LIMIT ou #COMPOSE_FILE non ajoutes)"
+fi
+if out="$("$INFRA/scripts/init-env.sh" --sync "$work/env-sync" 2>&1)" && printf '%s' "$out" | grep -q 'deja a jour'; then ok "init-env.sh --sync rejoue : $out"; else fail "init-env.sh --sync rejoue : « $out »"; fi
+rm -f "$work/env-sync"
 
 printf '== 7. lib.sh : priorite de l environnement sur une ligne vide du .env, verrou\n'
 printf 'SPARK_ALERT_WEBHOOK=\nOTHER=from-env-file\n' > "$work/env-prec"
@@ -209,14 +286,48 @@ else
 fi
 rm -rf "$work/alert-infra" "$work/hook" "$work/hook.port"
 
+printf '== 7.c tunnel-config.sh : config cloudflared ecrite depuis le .env, sans secret\n'
+tunnel_id="12345678-1234-4123-8123-123456789abc"
+mkdir -p "$work/tunnel-infra" "$work/cfd" && cp "$INFRA/compose.yml" "$work/tunnel-infra/" && cp -R "$INFRA/scripts" "$work/tunnel-infra/"
+grep -v -E '^(SPARK_TUNNEL_ID|SPARK_TUNNEL_DIR)=' "$INFRA/.env" > "$work/tunnel-infra/.env"
+printf 'SPARK_TUNNEL_ID=%s\nSPARK_TUNNEL_DIR=%s\n' "$tunnel_id" "$work/cfd" >> "$work/tunnel-infra/.env"
+rc=0; out="$("$work/tunnel-infra/scripts/tunnel-config.sh" 2>&1)" || rc=$?
+case "$rc:$out" in 2:*"identifiants du tunnel absents"*) ok "sans <id>.json : refus explicite (code 2)" ;; *) fail "sans <id>.json : code $rc, « $out »" ;; esac
+printf '{}' > "$work/cfd/$tunnel_id.json"
+if out="$("$work/tunnel-infra/scripts/tunnel-config.sh" 2>&1)" && [ -f "$work/cfd/config.yml" ] \
+   && grep -q "service: http://caddy:80" "$work/cfd/config.yml" && grep -q "credentials-file: /etc/cloudflared/$tunnel_id.json" "$work/cfd/config.yml" \
+   && [ "$(grep -c "hostname: $PREFIX-" "$work/cfd/config.yml")" -eq 3 ]; then
+  ok "config.yml (conteneur) : 3 ingress vers caddy:80, credentials sous /etc/cloudflared/"
+else
+  fail "config.yml (conteneur) : $out"
+fi
+if "$work/tunnel-infra/scripts/tunnel-config.sh" --check >/dev/null 2>&1; then ok "--check : config conforme au .env (code 0)"; else fail "--check devrait sortir 0 sur une config a jour"; fi
+if out="$("$work/tunnel-infra/scripts/tunnel-config.sh" --host 2>&1)" && grep -q "service: http://localhost:$PORT" "$work/cfd/config-spark.yml" \
+   && grep -q "credentials-file: $work/cfd/$tunnel_id.json" "$work/cfd/config-spark.yml"; then
+  ok "config-spark.yml (variante hote) : ingress vers localhost:$PORT"
+else
+  fail "config-spark.yml (variante hote) : $out"
+fi
+if grep -rq -E 'PASSWORD|SECRET|TOKEN' "$work/cfd/config.yml" "$work/cfd/config-spark.yml"; then fail "la config cloudflared contient un nom de secret"; else ok "aucun secret dans la config cloudflared"; fi
+
 if [ "$up" -eq 1 ]; then
   printf '== 8. docker compose up (projet %s, port %s)\n' "$PROJECT" "$PORT"
   spark_compose -p "$PROJECT" up -d --quiet-pull 2>&1 | grep -v -E '^\s*$' | sed 's/^/        /' || true
-  # Sonde par marqueur : Caddy repond 200 avec un corps vide a tout Host qu'il ne connait pas,
-  # un code 200 ne prouve donc pas le routage. On exige un fragment du corps propre au service.
+  running="$(spark_compose -p "$PROJECT" ps --services 2>/dev/null | sort | tr '\n' ' ')"
+  case " $running" in
+    *" cloudflared "*|*" runners "*) fail "cloudflared ou runners demarre sans profil : $running" ;;
+    *) ok "sans profil, services demarres : $running" ;;
+  esac
+  # Sonde par marqueur : un code 200 ne prouve pas le routage, on exige un fragment du corps propre
+  # au service (et, depuis ce lot, un Host inconnu recoit 404).
   probe() {
     curl -s -m 10 -H "Host: $PREFIX-$1.$DOMAIN" "http://127.0.0.1:$PORT$2" 2>/dev/null || true
   }
+  code_of() {  # service, chemin [, options curl] -> code HTTP
+    local svc="$1" path="$2"; shift 2
+    curl -s -m 10 -o /dev/null -w '%{http_code}' -H "Host: $PREFIX-$svc.$DOMAIN" "$@" "http://127.0.0.1:$PORT$path" 2>/dev/null || printf '000'
+  }
+  headers_of() { curl -s -m 10 -D - -o /dev/null -H "Host: $PREFIX-$1.$DOMAIN" "http://127.0.0.1:$PORT$2" 2>/dev/null || true; }
   wait_marker() {
     local svc="$1" path="$2" marker="$3" body=""
     for _ in $(seq 1 90); do
@@ -226,13 +337,98 @@ if [ "$up" -eq 1 ]; then
     done
     fail "-$svc ne repond pas via Caddy ($path, corps : '${body:0:80}')"
   }
-  wait_marker n8n /healthz '"status":"ok"'
+  wait_marker n8n /healthz/readiness '"status":"ok"'
   wait_marker db /api/v1/health '"message":"OK"'
   # Fichier de sites.d/ reellement servi (pas seulement valide)
   wait_marker selftest / selftest
-  # Host inconnu : aujourd'hui 200 et corps vide (limite connue ; l'attrape-tout 404 vient avec un lot suivant)
-  unknown="$(curl -s -m 10 -o /dev/null -w '%{http_code} %{size_download}' -H "Host: nope.$DOMAIN" "http://127.0.0.1:$PORT/" 2>/dev/null || printf '000 0')"
-  printf '  INFO  Host inconnu -> %s (code et octets ; pas encore un 404)\n' "$unknown"
+  # Attrape-tout : Host inconnu -> 404 (plus jamais 200 et corps vide)
+  unknown="$(curl -s -m 10 -o /dev/null -w '%{http_code}' -H "Host: nope.$DOMAIN" "http://127.0.0.1:$PORT/" 2>/dev/null || printf '000')"
+  if [ "$unknown" = "404" ]; then ok "Host inconnu -> 404"; else fail "Host inconnu -> $unknown, attendu 404"; fi
+  # En-tetes de securite (snippet securite) sur chaque vhost, X-Frame-Options selon le vhost, CORS sur -db.
+  # Les reponses d'ERREUR aussi (SECURITY.md §2.2 vaut pour toute reponse) : 404 de l'attrape-tout, 404
+  # de file_server sur -app (/apps/<absent>) : Caddy n'applique pas un bloc `header` differe a une erreur,
+  # le kit les pose dans handle_errors ; sans cela, `Server: Caddy` sortait et les en-tetes manquaient.
+  check_headers() {  # libelle, en-tetes bruts
+    local label="$1" h="$2" missing="" want
+    for want in 'strict-transport-security: max-age=63072000; includeSubDomains' 'x-content-type-options: nosniff' 'referrer-policy: strict-origin-when-cross-origin' 'permissions-policy: accelerometer=()'; do
+      printf '%s' "$h" | grep -qi "^$want" || missing="$missing [$want]"
+    done
+    # Via : ajoute par reverse_proxy (`Via: 1.1 Caddy`), meme empreinte que Server ; le snippet le retire.
+    if printf '%s' "$h" | grep -qiE '^(server|x-powered-by|via):'; then missing="$missing [Server/X-Powered-By/Via present]"; fi
+    if [ -z "$missing" ]; then ok "$label : en-tetes de securite presents, Server, X-Powered-By et Via absents"; else fail "$label : en-tetes manquants$missing"; fi
+  }
+  # xfo_of : valeur(s) de X-Frame-Options dans des en-tetes bruts, jointes par `+` s'il y en a plusieurs
+  # (chaque extraction se termine par `|| true` : un en-tete absent est un FAIL affiche, pas un arret du script)
+  xfo_of() { printf '%s' "$1" | { grep -i '^x-frame-options:' || true; } | tr -d '\r' | awk '{print $2}' | tr '\n' '+' | sed 's/+$//'; }
+  for svc in n8n app db selftest; do
+    check_headers "-$svc" "$(headers_of "$svc" /)"
+  done
+  h_unknown="$(curl -s -m 10 -D - -o /dev/null -H "Host: nope.$DOMAIN" "http://127.0.0.1:$PORT/" 2>/dev/null || true)"
+  check_headers "Host inconnu (404 attrape-tout)" "$h_unknown"
+  app404="$(code_of app /apps/fichier-absent-selftest)"
+  if [ "$app404" = "404" ]; then ok "-app /apps/<absent> -> 404 (file_server)"; else fail "-app /apps/<absent> -> $app404, attendu 404"; fi
+  h_app404="$(headers_of app /apps/fichier-absent-selftest)"
+  check_headers "-app 404 de file_server (handle_errors)" "$h_app404"
+  # X-Frame-Options : par vhost sur les reponses normales (pose avec `>`, apres la reponse de l'amont :
+  # sur -app, `/` passe par n8n), DENY sur TOUTE reponse d'erreur (snippet erreurs, attrape-tout).
+  xfo_n8n="$(xfo_of "$(headers_of n8n /)")"; xfo_app="$(xfo_of "$(headers_of app /)")"
+  if [ "$xfo_n8n" = "DENY" ] && [ "$xfo_app" = "SAMEORIGIN" ]; then ok "X-Frame-Options : DENY sur -n8n, SAMEORIGIN sur -app"; else fail "X-Frame-Options : -n8n « $xfo_n8n », -app « $xfo_app »"; fi
+  xfo_unknown="$(xfo_of "$h_unknown")"; xfo_app404="$(xfo_of "$h_app404")"
+  if [ "$xfo_unknown" = "DENY" ] && [ "$xfo_app404" = "DENY" ]; then ok "X-Frame-Options : DENY sur les deux reponses 404 (attrape-tout, file_server)"; else fail "X-Frame-Options sur les erreurs : attrape-tout « $xfo_unknown », file_server « $xfo_app404 » (attendu DENY)"; fi
+  acao="$(headers_of db /api/v1/health | { grep -i '^access-control-allow-origin:' || true; } | tr -d '\r' | awk '{print $2}' | tr '\n' '+' | sed 's/+$//')"
+  if [ "$acao" = "https://$PREFIX-app.$DOMAIN" ]; then ok "-db : Access-Control-Allow-Origin = https://$PREFIX-app.$DOMAIN"; else fail "-db : Access-Control-Allow-Origin « $acao »"; fi
+  # Drapeau MAINTENANCE : 503 + Retry-After sur tous les vhosts (webhook compris), retour apres retrait.
+  touch "$INFRA/config/caddy/MAINTENANCE"
+  spark_compose -p "$PROJECT" exec -T caddy caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || fail "caddy reload (MAINTENANCE pose)"
+  m="$(code_of n8n /rest/settings) $(code_of app /webhook/x -X POST) $(code_of db /api/v1/health) $(code_of selftest /) $(code_of n8n /healthz/readiness)"
+  retry="$(headers_of app / | { grep -i '^retry-after:' || true; } | tr -d '\r' | awk '{print $2}')"
+  if [ "$m" = "503 503 503 503 200" ] && [ "$retry" = "300" ]; then ok "MAINTENANCE pose : 503 sur -n8n, -app (POST /webhook), -db, sites.d, Retry-After 300 ; /healthz/readiness reste servi (200)"; else fail "MAINTENANCE pose : codes « $m » (attendu 503 503 503 503 200), Retry-After « $retry »"; fi
+  rm -f "$INFRA/config/caddy/MAINTENANCE"
+  spark_compose -p "$PROJECT" exec -T caddy caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 || fail "caddy reload (MAINTENANCE retire)"
+  m="$(code_of n8n /healthz/readiness) $(code_of db /api/v1/health)"
+  if [ "$m" = "200 200" ]; then ok "MAINTENANCE retire : 200 sur -n8n et -db"; else fail "MAINTENANCE retire : codes « $m »"; fi
+  # Journal d'acces JSON ecrit dans le volume caddy_logs
+  if spark_compose -p "$PROJECT" exec -T caddy sh -c 'test -s /var/log/caddy/access.log && head -c 400 /var/log/caddy/access.log | grep -q "\"request\""' >/dev/null 2>&1; then
+    ok "journal d'acces JSON ecrit (/var/log/caddy/access.log)"
+  else
+    fail "journal d'acces absent ou vide"
+  fi
+  # Healthchecks compose : les trois services passent healthy (start_period n8n 120 s, caddy 150 s)
+  n_healthy=0
+  for _ in $(seq 1 100); do
+    hs="$(spark_compose -p "$PROJECT" ps --format '{{.Service}}={{.Health}}' n8n nocodb caddy postgres 2>/dev/null | sort | tr '\n' ' ')"
+    # shellcheck disable=SC2086
+    n_healthy="$(printf '%s\n' $hs | grep -c '=healthy$' || true)"
+    case "$hs" in *unhealthy*) break ;; esac
+    [ "$n_healthy" -eq 4 ] && break
+    sleep 3
+  done
+  if [ "$n_healthy" -eq 4 ]; then ok "healthchecks : $hs"; else fail "healthchecks : $hs"; fi
+  # Config cloudflared generee : validee par l'image du compose, sans jeton ni compte (aucun tunnel ouvert)
+  cfd_image="$(spark_compose -p "$PROJECT" --profile tunnel config --images 2>/dev/null | grep '^cloudflare/cloudflared' | head -1 || true)"
+  # --user comme le compose (SPARK_UID:SPARK_GID) : config.yml et <id>.json sont en 600, proprietaire = l'installateur.
+  # (meme commande que l'etape 4.4 des guides, hors compose : le projet de test n'a pas de SPARK_TUNNEL_DIR
+  # dans son .env ; la sortie est gardee pour que l'echec dise pourquoi, jamais un simple « FAIL »)
+  if [ -n "$cfd_image" ] && out="$(docker run --rm --user "$(id -u):$(id -g)" -v "$work/cfd:/etc/cloudflared:ro" "$cfd_image" tunnel --config /etc/cloudflared/config.yml ingress validate 2>&1)" \
+     && printf '%s' "$out" | grep -qx 'OK'; then
+    ok "cloudflared tunnel ingress validate : config.yml acceptee par $cfd_image"
+  else
+    fail "cloudflared tunnel ingress validate (image « $cfd_image ») : $(printf '%s' "${out:-}" | tail -2 | tr '\n' ' ')"
+  fi
+  cfd_user="$(docker image inspect --format '{{.Config.User}}' "$cfd_image" 2>/dev/null || true)"
+  if [ "$cfd_user" = "65532:65532" ]; then ok "image cloudflared : utilisateur non root ($cfd_user)"; else fail "image cloudflared : utilisateur « $cfd_user »"; fi
+  # Sidecar runners : demarre avec son profil et l'override, reste Up (le banc fonctionnel est dans UPGRADES.md)
+  if COMPOSE_PROFILES=runners spark_compose -p "$PROJECT" -f compose.yml -f compose.runners.yml up -d --quiet-pull >/dev/null 2>&1; then
+    sleep 20
+    st="$(spark_compose -p "$PROJECT" --profile runners ps --format '{{.Status}}' runners 2>/dev/null | head -1)"
+    case "$st" in Up*) ok "profil runners : sidecar $st" ;; *) fail "profil runners : sidecar « $st »" ;; esac
+    if spark_compose -p "$PROJECT" --profile runners logs runners 2>/dev/null | grep -qiE 'registered|connected|ready'; then ok "sidecar : connecte au broker n8n (journal)"; else printf '  INFO  journal du sidecar sans ligne registered/connected (voir docker compose logs runners)\n'; fi
+    COMPOSE_PROFILES=runners spark_compose -p "$PROJECT" -f compose.yml -f compose.runners.yml stop runners >/dev/null 2>&1 || true
+    spark_compose -p "$PROJECT" up -d >/dev/null 2>&1 || true   # n8n revient en mode interne
+    wait_marker n8n /healthz/readiness '"status":"ok"'
+  else
+    fail "profil runners : up en echec"
+  fi
   spark_compose -p "$PROJECT" ps --format 'table {{.Name}}\t{{.Image}}\t{{.Status}}' 2>/dev/null | sed 's/^/        /' || true
 
   printf '== 9. backup.sh puis restore-test.sh sur la stack de test\n'

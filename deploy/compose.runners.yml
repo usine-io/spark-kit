@@ -1,0 +1,19 @@
+# deploy/compose.runners.yml — override : n8n en mode task runner EXTERNE (sidecar n8nio/runners).
+#
+# Toujours avec le profil `runners` de compose.yml, jamais seul :
+#   docker compose -f compose.yml -f compose.runners.yml --profile runners up -d
+# ou, dans .env : COMPOSE_PROFILES=runners et COMPOSE_FILE=compose.yml:compose.runners.yml
+# (l'unit systemd et les scripts du kit lisent alors les deux fichiers).
+#
+# Ces variables ne sont PAS dans compose.yml pour ne pas ouvrir le port du broker (5679) ni
+# exiger un jeton en mode interne. Le sidecar et n8n ont la MEME version (tags lies).
+# Banc avant adoption (UPGRADES.md, fiche n8n) : un node Code execute avec succes, memoire des deux
+# cgroups relevee, latence des endpoints temoins inchangee.
+services:
+  n8n:
+    environment:
+      N8N_RUNNERS_MODE: external
+      N8N_RUNNERS_AUTH_TOKEN: ${N8N_RUNNERS_AUTH_TOKEN}
+      # Le broker ecoute sur toutes les interfaces DU CONTENEUR (reseau compose seulement, aucun
+      # port publie) : le sidecar le joint en http://n8n:5679.
+      N8N_RUNNERS_BROKER_LISTEN_ADDRESS: 0.0.0.0
