@@ -2,6 +2,13 @@
 # deploy/scripts/restore-test.sh — test de restauration dans un Postgres jetable.
 #
 # Usage : restore-test.sh [chemin/pg_dumpall-*.sql.gz]    (defaut : le plus recent de infra/backups/)
+#   Un chemin explicite qui n'existe pas : « ERREUR: dump <chemin> introuvable », code 2, aucun repli
+#   sur le dump le plus recent.
+#
+# Le dechiffrement des identifiants n8n (etape 4) utilise la N8N_ENCRYPTION_KEY du .env COURANT
+# de infra/, pas celle contenue dans l'archive secrets-*.tar.age du meme jeu : le test prouve que
+# la cle en service lit la base sauvegardee, pas que l'archive est lisible (verification de
+# l'archive avec la cle privee age hors machine : guide Linux, etape 3.b).
 #
 # Un backup non teste n'est pas un backup. Le script :
 #   0. refuse un dump illisible ou tronque (derniere ligne « PostgreSQL database cluster dump
@@ -43,10 +50,13 @@ mkdir -p "$BACKUP_DIR"
 spark_lock "$BACKUP_DIR/.lock-restore-test" "restore-test.sh"
 
 dump="${1:-}"
-if [ -z "$dump" ]; then
+if [ -n "$dump" ]; then
+  # Chemin explicite : il doit exister tel quel (pas de repli silencieux sur le plus recent).
+  [ -f "$dump" ] || spark_die "dump $dump introuvable"
+else
   dump="$(find "$BACKUP_DIR" -maxdepth 1 -name 'pg_dumpall-*.sql.gz' -print 2>/dev/null | sort | tail -1)"
+  if [ -z "$dump" ] || [ ! -f "$dump" ]; then spark_die "aucun dump pg_dumpall-*.sql.gz dans $BACKUP_DIR (lancer backup.sh)"; fi
 fi
-if [ -z "$dump" ] || [ ! -f "$dump" ]; then spark_die "aucun dump pg_dumpall-*.sql.gz dans $BACKUP_DIR (lancer backup.sh)"; fi
 
 PROJECT="$(spark_project_name)"
 PG_IMAGE="$(spark_service_image postgres 'postgres')"
