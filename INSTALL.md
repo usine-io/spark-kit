@@ -198,7 +198,7 @@ out=$(docker compose config -q 2>&1); [ -z "$out" ] && echo "compose: OK" || { e
 ~/spark/infra/scripts/check-env.sh
 ```
 
-`compose: OK` ne s'affiche que si `docker compose config` n'a **rien** ecrit : un avertissement `variable is not set` (code de retour 0 pourtant) est affiche a la place et la commande echoue. Compose ne dit rien d'une variable **presente mais vide** (`NOM=`) : `check-env.sh` verifie une a une celles qui doivent avoir une valeur (`SPARK_PREFIX`, `SPARK_DOMAIN` et les 5 secrets), sur la valeur resolue sans guillemets ni espaces, et affiche `OK   NOM` ou `FAIL NOM absent ou vide` (code 1), jamais la valeur.
+`compose: OK` ne s'affiche que si `docker compose config` n'a **rien** ecrit : un avertissement `variable is not set` (code de retour 0 pourtant) est affiche a la place et la commande echoue. Compose ne dit rien d'une variable **presente mais vide** (`NOM=`) : `check-env.sh` verifie une a une celles qui doivent avoir une valeur (`SPARK_PREFIX`, `SPARK_DOMAIN` et les 5 secrets), sur la valeur resolue sans guillemets ni espaces, et affiche `OK   NOM` ou `FAIL NOM absent ou vide` (code 1), jamais la valeur. Il ne regarde que le fichier, jamais l'environnement du shell. Le `.env` est **source comme du shell** par les scripts du kit : une valeur ajoutee a la main qui contient `$`, un accent grave ou une espace va entre guillemets simples (`NOM='val eur'`).
 
 > `header_up X-Forwarded-Proto https` dans le Caddyfile est obligatoire : Caddy recoit du HTTP depuis cloudflared, mais les apps doivent croire qu'elles sont en HTTPS (sinon n8n refuse les cookies securises).
 
@@ -228,17 +228,21 @@ docker compose up -d
 Verifier que les services repondent via Caddy (attendre ~30 s). La sonde lit un **marqueur dans le corps** (`/healthz` de n8n, `/api/v1/health` de NocoDB) : Caddy repond `200` et corps vide a tout `Host` inconnu, un code `200` seul ne prouverait rien.
 
 ```bash
-cd ~/spark/infra && set -a && . ./.env && set +a
-[ -n "$SPARK_PREFIX" ] && [ -n "$SPARK_DOMAIN" ] || { echo "FAIL .env non charge"; false; }
-probe() {  # service, chemin, marqueur attendu dans le corps
-  body=$(curl -s -m 10 -H "Host: ${SPARK_PREFIX}-$1.${SPARK_DOMAIN}" "http://127.0.0.1:${SPARK_HOST_HTTP_PORT:-18080}$2" 2>/dev/null || true)
-  case "$body" in
-    *"$3"*) printf "  %-6s OK\n" "-$1" ;;
-    *) printf "  %-6s FAIL (%s : corps « %.60s »)\n" "-$1" "$2" "$body"; false ;;
-  esac
-}
-probe n8n /healthz '"status":"ok"'
-probe db  /api/v1/health '"message":"OK"'
+cd ~/spark/infra
+(  # sous-shell : le .env est lu ici et n'est PAS exporte dans le shell interactif (une variable
+   # exportee l'emporterait ensuite sur le fichier pour les scripts du kit, meme apres edition du .env)
+  set -a && . ./.env && set +a
+  [ -n "$SPARK_PREFIX" ] && [ -n "$SPARK_DOMAIN" ] || { echo "FAIL .env non charge"; exit 1; }
+  probe() {  # service, chemin, marqueur attendu dans le corps
+    body=$(curl -s -m 10 -H "Host: ${SPARK_PREFIX}-$1.${SPARK_DOMAIN}" "http://127.0.0.1:${SPARK_HOST_HTTP_PORT:-18080}$2" 2>/dev/null || true)
+    case "$body" in
+      *"$3"*) printf "  %-6s OK\n" "-$1" ;;
+      *) printf "  %-6s FAIL (%s : corps « %.60s »)\n" "-$1" "$2" "$body"; false ;;
+    esac
+  }
+  probe n8n /healthz '"status":"ok"'
+  probe db  /api/v1/health '"message":"OK"'
+)
 docker compose ps --format "table {{.Name}}\t{{.Image}}\t{{.Status}}"
 ```
 
@@ -391,7 +395,7 @@ sudo reboot
 Attendre ~2 min, puis se reconnecter en SSH (ou via Tailscale) et lancer la verification :
 
 ```bash
-cd ~/spark/infra && set -a && . ./.env && set +a
+cd ~/spark/infra
 
 echo "=== Colima ==="
 colima status && echo "OK" || echo "FAIL"
@@ -399,17 +403,20 @@ colima status && echo "OK" || echo "FAIL"
 echo "=== Containers ==="
 docker ps --format "{{.Names}}\t{{.Status}}" | grep -E "spark"
 
-echo "=== Caddy → services (marqueur dans le corps, pas seulement le code) ==="
-[ -n "$SPARK_PREFIX" ] && [ -n "$SPARK_DOMAIN" ] || echo "  FAIL .env non charge"
-probe() {
-  body=$(curl -s -m 10 -H "Host: ${SPARK_PREFIX}-$1.${SPARK_DOMAIN}" "http://127.0.0.1:${SPARK_HOST_HTTP_PORT:-18080}$2" 2>/dev/null || true)
-  case "$body" in *"$3"*) printf "  %-6s OK\n" "-$1" ;; *) printf "  %-6s FAIL (%s)\n" "-$1" "$2" ;; esac
-}
-probe n8n /healthz '"status":"ok"'
-probe db  /api/v1/health '"message":"OK"'
+(  # sous-shell : le .env n'est pas exporte dans le shell interactif
+  set -a && . ./.env && set +a
+  echo "=== Caddy → services (marqueur dans le corps, pas seulement le code) ==="
+  [ -n "$SPARK_PREFIX" ] && [ -n "$SPARK_DOMAIN" ] || echo "  FAIL .env non charge"
+  probe() {
+    body=$(curl -s -m 10 -H "Host: ${SPARK_PREFIX}-$1.${SPARK_DOMAIN}" "http://127.0.0.1:${SPARK_HOST_HTTP_PORT:-18080}$2" 2>/dev/null || true)
+    case "$body" in *"$3"*) printf "  %-6s OK\n" "-$1" ;; *) printf "  %-6s FAIL (%s)\n" "-$1" "$2" ;; esac
+  }
+  probe n8n /healthz '"status":"ok"'
+  probe db  /api/v1/health '"message":"OK"'
 
-echo "=== Tunnel ==="
-curl -sI "https://${SPARK_PREFIX}-n8n.${SPARK_DOMAIN}" | head -1
+  echo "=== Tunnel ==="
+  curl -sI "https://${SPARK_PREFIX}-n8n.${SPARK_DOMAIN}" | head -1
+)
 
 echo "=== Tailscale ==="
 /Applications/Tailscale.app/Contents/MacOS/Tailscale status --json 2>/dev/null | jq -r '.Self.Online' && echo "OK" || echo "FAIL"
@@ -489,7 +496,7 @@ grep '^# public key:' ~/spark-backup.key  # -> BACKUP_AGE_RECIPIENT=age1... dans
 
 - **Planification** : un LaunchAgent par script (toutes les 6 h pour `backup.sh`, quotidien pour `restore-test.sh`), sur le modele de `com.spark.cloudflared.plist` ci-dessus ; sur Linux, le kit livre les timers systemd (`deploy/linux/systemd/`).
 - **Couche offsite** : agnostique au provider — un **remote rclone au choix** (S3/MinIO, Backblaze B2, SFTP, WebDAV…). `rclone copy` + retention par age (pas `sync`, qui casserait la retention offsite longue). Les dumps contiennent des secrets : distant chiffre.
-- **Critere de validation** : `restore-test.sh` passe, avec au moins un identifiant n8n dechiffre — un backup non teste n'est pas un backup. Tant que n8n n'a aucun identifiant (*credential*, pas la cle API), le script avertit et reussit ; des qu'un identifiant existe, poser `RESTORE_TEST_REQUIRE_CREDENTIAL=1` dans `~/spark/infra/.env` pour que son absence fasse echouer le test. `backup.sh` n'ecrit rien sans `BACKUP_AGE_RECIPIENT`.
+- **Critere de validation** : `restore-test.sh` passe, avec au moins un identifiant n8n dechiffre — un backup non teste n'est pas un backup. Tant que n8n n'a aucun identifiant (*credential*, pas la cle API), le script avertit et reussit ; des qu'un identifiant existe, poser `RESTORE_TEST_REQUIRE_CREDENTIAL=1` dans `~/spark/infra/.env` pour que son absence fasse echouer le test. `backup.sh` n'ecrit rien sans `BACKUP_AGE_RECIPIENT`. Une variable deja exportee dans le shell (par un `set -a; . ./.env` anterieur) **l'emporte** sur le fichier pour ces scripts : apres avoir edite le `.env`, les lancer depuis un shell neuf. Les deux scripts alertent (`ALERTE` sur stderr, POST a `SPARK_ALERT_WEBHOOK` si renseigne) des la premiere erreur, `.env` absent compris.
 
 > Les deux briques sont independantes : on peut poser la sauvegarde sans la securite, ou l'inverse. Les chiffrages sont des ordres de grandeur "premiere fois, a la main" (dashboard, pas IaC).
 
