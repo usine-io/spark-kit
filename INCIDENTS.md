@@ -96,7 +96,7 @@ Signalement à l'ouverture → service rétabli en ~45 min → cause racine et m
 
 ## INC-2026-08-06 — Les étiquettes sortent en ZPL brut : le démarrage automatique avait perdu la configuration
 
-**Site** : anonymisé (`acme` / `acme.example`) — pseudo-API n8n → serveur d'impression local → étiqueteuse ZPL (TSC en USB)
+**Site** : anonymisé (`acme` / `acme.example`) — pseudo-API n8n → serveur d'impression local → étiqueteuse ZPL (en USB)
 **Sévérité** : high (impression d'étiquettes à l'arrêt en pleine production ; l'atelier ne peut plus identifier les appareils)
 **Statut** : ✅ résolu (cause racine corrigée, plus 4 défauts adjacents découverts en chemin)
 
@@ -126,7 +126,7 @@ Les trois sont propres → **la cause est en aval du logiciel**. Le détail déc
 Et l'auto-détection **sondait le réseau AVANT de regarder l'imprimante locale** :
 ```python
 def detect_printer():
-    for ip in ["192.168.1.50", "192.168.1.100", "192.168.0.50"]:   # réseau d'abord…
+    for ip in ["<ip-reseau-1>", "<ip-reseau-2>", "<ip-reseau-3>"]:   # réseau d'abord…
         if connect(ip, 9100): return {"mode": "tcp", "host": ip}
     return chercher_imprimante_windows()                            # …USB ensuite
 ```
@@ -215,7 +215,7 @@ Détection immédiate (test de l'endpoint juste après le patch) → restauratio
 
 ## INC-2026-06-30 — QR code ZPL n'encode qu'une seule lettre (préfixe `^FD` manquant sur `^BQ`)
 
-**Site** : anonymisé (site Spark imprimant des étiquettes QR via une pseudo-API n8n → imprimante ZPL, ici TSC TE310 en émulation ZPL)
+**Site** : anonymisé (site Spark imprimant des étiquettes QR via une pseudo-API n8n → imprimante d'étiquettes en émulation ZPL)
 **Sévérité** : medium (étiquettes physiques imprimées mais QR illisible/faux → traçabilité cassée en atelier ; pas de panne stack)
 **Statut** : 🟢 résolu (préfixe ajouté + vérifié par décodage)
 
@@ -244,7 +244,7 @@ La syntaxe QR de ZPL (`^BQ`) impose que le champ `^FD` **commence par 2 caractè
 - `<niveau_correction>` ∈ `L`(~7%) `M`(~15%) `Q`(~25%) `H`(~30%)
 - `<mode>` = `A` (automatique, recommandé) ou `M` (manuel)
 
-Sans ce préfixe, le firmware (TSC TE310 / Zebra) **consomme les premiers caractères de la donnée comme codes de contrôle** et n'encode que le reliquat → d'où « une seule lettre ». Le préfixe **n'est pas encodé** dans le QR : `^FDMA,3NEW` → le symbole contient exactement `3NEW`, pas `MA,3NEW`. (C'est aussi pourquoi un QR « correct » paraît plus dense : il porte enfin toute la donnée + la redondance de correction d'erreur, pas de l'info en plus.)
+Sans ce préfixe, le firmware de l'étiqueteuse (ZPL) **consomme les premiers caractères de la donnée comme codes de contrôle** et n'encode que le reliquat → d'où « une seule lettre ». Le préfixe **n'est pas encodé** dans le QR : `^FDMA,3NEW` → le symbole contient exactement `3NEW`, pas `MA,3NEW`. (C'est aussi pourquoi un QR « correct » paraît plus dense : il porte enfin toute la donnée + la redondance de correction d'erreur, pas de l'info en plus.)
 
 ### Fix immédiat
 Préfixer le `^FD` de **tout** `^BQ` : `^FD<data>` → `^FDMA,<data>` (Medium + Auto, défaut robuste pour une étiquette manipulée).
@@ -404,7 +404,7 @@ Avant de merger, ajouter un test smoke `nc_pat` → `list_bases` dans `validate-
 ### Symptôme
 - `https://acme-db.acme.example/` répond `HTTP 502` (Caddy ne joint pas l'upstream)
 - `docker-compose ps` : `acme-nocodb-1   Restarting (1) X seconds ago`, en boucle ~60 s
-- Trois autres services (n8n, postgres, kuma) : OK
+- Trois autres services (n8n, postgres, supervision) : OK
 
 ### Diagnostic
 ```bash
@@ -477,7 +477,7 @@ NC_DB_JSON: '{"client":"pg","connection":{"host":"postgres","port":5432,"user":"
 
 ## INC-(antérieur, capturé dans le wiki) — Containers Spark exit code 0 / restart loop ~60s
 
-**Source** : `spark-vault/wiki/topics/architecture-technique.md` §1.3 ("Symptômes d'un Colima sous-dimensionné")
+**Source** : retour d'expérience interne (symptômes d'un Colima sous-dimensionné)
 **Statut** : ✅ leçon déjà intégrée au sizing Colima du bootstrap (à coder en Phase 3)
 
 ### Symptôme (synthèse du wiki)

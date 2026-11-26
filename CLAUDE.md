@@ -14,10 +14,24 @@ Ne pas recreer ici une copie du briefing : elle redivergerait. Toute amelioratio
 
 | Fichier | Role |
 |---------|------|
-| `README.md` | Installation de la stack (Mac Mini, Colima, compose, tunnel) |
+| `README.md` | Presentation, stack, roles, prerequis |
+| `INSTALL.md` | Installation macOS (Colima) |
+| `INSTALL-LINUX.md` | Installation Linux (serveur de production) |
+| `CLAUDE-CODE.md` | Configuration de Claude Code (skills, MCP, smoke test) |
 | `SECURITY.md` | Standard de durcissement, modele de menace, audit recurrent |
 | `INCIDENTS.md` | Incidents transverses (INC-AAAA-MM-JJ) |
 | `ROADMAP.md` | Roadmap du kit |
+| `deploy/` | Fichiers de deploiement Linux (systemd, env.example) |
+
+## Depot public : anonymisation
+
+Ce depot est **public**. Avant tout commit, nom de branche ou texte de PR :
+
+- aucun nom de client, de site, de personne, d'hebergeur ou de fournisseur metier : ecrire « une PME », « un site pilote » ;
+- aucune date precise ni chiffre recoupable dans une anecdote (« vecu chez une PME », sans date) ;
+- aucune reference a un document interne (rapport, PRD, lecon numerotee, chemin de vault) ;
+- aucune IP, aucun domaine reel (utiliser `acme.example`), aucun secret ;
+- passer le `grep` : noms interdits (liste tenue hors du depot), IP privees `192\.168|10\.[0-9]+\.|172\.(1[6-9]|2[0-9]|3[01])\.`, dates `2026-(0[1-9]|1[0-2])-[0-9]{2}` hors identifiants `INC-` et journal de la ROADMAP, noms de mois suivis d'une annee.
 
 ## Flux des leçons
 

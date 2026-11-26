@@ -7,7 +7,7 @@ Spark transforme un serveur de prototypage en plateforme d'orchestration : proto
 Le serveur de prototypage peut etre :
 - un **Mac Mini** dans les locaux de l'entreprise (ideal pour demarrer)
 - un **poste Linux** sur le reseau local
-- un **VPS heberge** chez un prestataire (Ecritel, OVH, Scaleway...)
+- un **VPS heberge** chez l'hebergeur de votre choix
 
 Spark vous permet de creer des prototypes a plusieurs etages :
 - Browser extensions : decuplez la puissance de vos logiciels web
