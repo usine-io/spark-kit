@@ -1,0 +1,19 @@
+[Unit]
+Description=Spark - sauvegarde locale (pg_dumpall, volumes, secrets chiffres)
+Documentation=https://github.com/spark-kit/spark-kit
+Requires=docker.service
+After=docker.service spark-compose.service
+# Pause de maintenance : `touch /opt/spark/MAINTENANCE` suspend tous les jobs planifies.
+ConditionPathExists=!/opt/spark/MAINTENANCE
+
+[Service]
+Type=oneshot
+User=spark
+Group=spark
+WorkingDirectory=/opt/spark/infra
+ExecCondition=/usr/bin/test ! -f /opt/spark/MAINTENANCE
+ExecStart=/opt/spark/infra/scripts/backup.sh
+TimeoutStartSec=1800
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

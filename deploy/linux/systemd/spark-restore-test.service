@@ -1,0 +1,16 @@
+[Unit]
+Description=Spark - test de restauration du dernier dump dans un Postgres jetable
+Documentation=https://github.com/spark-kit/spark-kit
+Requires=docker.service
+After=docker.service spark-compose.service
+ConditionPathExists=!/opt/spark/MAINTENANCE
+
+[Service]
+Type=oneshot
+User=spark
+Group=spark
+WorkingDirectory=/opt/spark/infra
+ExecCondition=/usr/bin/test ! -f /opt/spark/MAINTENANCE
+ExecStart=/opt/spark/infra/scripts/restore-test.sh
+TimeoutStartSec=1800
+Nice=10

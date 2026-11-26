@@ -1,0 +1,11 @@
+[Unit]
+Description=Spark - sauvegarde locale toutes les 6 h
+
+[Timer]
+OnCalendar=*-*-* 00,06,12,18:15:00
+RandomizedDelaySec=300
+Persistent=true
+Unit=spark-backup.service
+
+[Install]
+WantedBy=timers.target

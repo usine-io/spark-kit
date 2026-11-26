@@ -1,0 +1,2 @@
+# Ce fichier garantit que le repertoire sites.d/ existe (le Caddyfile l'importe par glob).
+# Poser ici un fichier <nom>.caddy par vhost additionnel. Les fichiers sans extension .caddy sont ignores.
