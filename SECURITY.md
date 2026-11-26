@@ -112,7 +112,7 @@ Un monitoring qui partage le compose des services surveilles ne peut pas detecte
 - **Rotation des secrets infra** tous les 90 jours : `NOCODB_API_TOKEN`, `N8N_API_KEY`, `CF_API_TOKEN`. Le `.env` contient les valeurs courantes ; un changement necessite `docker compose up -d` pour propager.
 - **Sauvegardes chiffrees et testees** : `deploy/scripts/backup.sh` chiffre `.env` et la config n8n (`age`, cle privee hors machine) ; `deploy/scripts/restore-test.sh` prouve chaque jour que le dernier dump se restaure et qu'un identifiant n8n se dechiffre. La cle privee `age` et `N8N_ENCRYPTION_KEY` vont dans le coffre de l'entreprise, jamais dans la sauvegarde en clair.
 - **FileVault** active sur le Mac qui heberge le site (chiffrement disque). Le `.env` est en clair sur le disque, FileVault protege en cas de vol physique.
-- **Permissions reduites du CF_API_TOKEN** : `Zone:DNS:Edit` est suffisant pour `tunnel-up.sh`/`tunnel-down.sh`. Ne jamais utiliser un token global Account.
+- **Permissions reduites du CF_API_TOKEN** : `Zone:DNS:Edit` suffit pour creer les enregistrements du tunnel (`cloudflared tunnel route dns`, etape 4 des guides) et pour les scripts d'automatisation DNS prevus par la ROADMAP (`tunnel-up.sh` / `tunnel-down.sh`, pas encore dans le kit). Ne jamais utiliser un token global Account.
 
 ---
 

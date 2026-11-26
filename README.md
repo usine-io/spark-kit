@@ -220,7 +220,7 @@ $SPARK_HOME/                          ← dossier de travail sur le serveur
 │       ├── env.example               gabarit du .env
 │       ├── config/caddy/             Caddyfile + sites.d/
 │       ├── config/postgres/          init-db.sh
-│       ├── scripts/                  init-env, backup, restore-test, pin-digests, selftest-install
+│       ├── scripts/                  init-env, backup, restore-test, pin-digests, selftest-install, mcp-n8n
 │       └── linux/systemd/            units et timers (compose, cloudflared, backup, restore-test)
 ├── templates/                        ← clone de spark-kit/templates (read-only)
 │   ├── setup-skeleton/               scripts de setup avances (securite)
@@ -234,7 +234,7 @@ $SPARK_HOME/                          ← dossier de travail sur le serveur
 │   ├── compose.yml                   copie de deploy/compose.yml
 │   ├── env.example                   copie de deploy/env.example
 │   ├── config/                       copie de deploy/config (caddy/, postgres/)
-│   ├── scripts/                      copie de deploy/scripts + mcp-n8n.sh
+│   ├── scripts/                      copie de deploy/scripts (dont mcp-n8n.sh)
 │   ├── apps/
 │   ├── logs/
 │   └── backups/                      dumps, tars, secrets chiffres, LAST_OK, RESTORE_TEST_OK

@@ -109,12 +109,14 @@ curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
 
 echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] \
   https://pkg.cloudflare.com/cloudflared \
-  $(lsb_release -cs) main" \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") main" \
   | sudo tee /etc/apt/sources.list.d/cloudflared.list > /dev/null
 
 sudo apt-get update
 sudo apt-get install -y cloudflared
 ```
+
+> Le nom de version vient de `/etc/os-release` comme en 1.2 : `lsb_release` n'est installe qu'en 1.4 et manque sur une Debian minimale.
 
 Verifier (et noter la version dans le runbook) :
 
@@ -191,8 +193,10 @@ Ce que ces copies posent :
 | `config/caddy/sites.d/` | Vhosts additionnels du site, un fichier `.caddy` par vhost (vide au depart) |
 | `scripts/init-env.sh` | Cree le `.env` avec des secrets URL-safe |
 | `scripts/backup.sh`, `scripts/restore-test.sh` | Sauvegarde et test de restauration (etape 3.b) |
-| `scripts/pin-digests.sh` | Releve ou controle les digests des images |
-| `scripts/selftest-install.sh` | Rejoue cette etape dans un repertoire temporaire pour verifier le kit |
+| `scripts/pin-digests.sh` | Releve ou controle les digests des images (compose et `mcp-n8n.sh`) |
+| `scripts/mcp-n8n.sh` | Lance le serveur MCP n8n a la demande pour Claude Code (image figee par tag + digest), voir [CLAUDE-CODE.md](CLAUDE-CODE.md) |
+| `scripts/lib.sh` | Fonctions communes (sourcees par les autres scripts) |
+| `scripts/selftest-install.sh` | Verifie le kit : se lance **depuis le kit** (`~/spark-kit/deploy/scripts/selftest-install.sh`), la copie dans `~/infra/scripts/` s'arrete avec un message qui renvoie au kit |
 
 Verifier que chaque fichier monte par le compose existe bien (un fichier absent serait remplace par un repertoire vide au demarrage, sans erreur) :
 
@@ -218,11 +222,13 @@ Verifier la configuration, sans afficher les secrets :
 
 ```bash
 cd ~/infra
-docker compose config --quiet && echo "compose: OK"
-grep -c '^[A-Z0-9_]*=.' .env
+out=$(docker compose config -q 2>&1); [ -z "$out" ] && echo "compose: OK" || { echo "$out"; false; }
+for v in SPARK_PREFIX SPARK_DOMAIN POSTGRES_ROOT_PASSWORD N8N_DB_PASSWORD NOCODB_DB_PASSWORD N8N_ENCRYPTION_KEY NC_AUTH_JWT_SECRET; do
+  grep -q "^$v=.." .env && echo "OK   $v" || { echo "FAIL $v vide"; false; }
+done
 ```
 
-`docker compose config` ne doit afficher **aucun** avertissement `variable is not set` ; le `grep` compte les variables renseignees (9 attendues a ce stade : site, port, 5 secrets, retention des sauvegardes).
+`compose: OK` ne s'affiche que si `docker compose config` n'a **rien** ecrit : un avertissement `variable is not set` (code de retour 0 pourtant) est affiche a la place et la commande echoue. Compose ne dit rien d'une variable **presente mais vide** (`NOM=`) : la boucle verifie une a une celles qui doivent avoir une valeur (site et 5 secrets).
 
 ### 2.4 — Points cles du compose
 
@@ -252,22 +258,27 @@ cd ~/infra
 docker compose up -d
 ```
 
-Attendre ~30 secondes, puis verifier :
+Attendre ~30 secondes, puis verifier. La sonde lit un **marqueur dans le corps** de la reponse (`/healthz` de n8n, `/api/v1/health` de NocoDB) : Caddy repond `200` avec un corps vide a tout `Host` qu'il ne connait pas, un code `200` seul ne prouverait donc pas le routage.
 
 ```bash
 cd ~/infra && set -a && . ./.env && set +a
-for svc in n8n db; do
-  host="${SPARK_PREFIX}-${svc}.${SPARK_DOMAIN}"
-  code=$(curl -s -o /dev/null -w "%{http_code}" \
-    -H "Host: $host" \
-    "http://localhost:${SPARK_HOST_HTTP_PORT:-18080}" 2>/dev/null || echo "000")
-  printf "  %-15s %s\n" "$svc" \
-    "$([[ $code =~ ^(200|301|302)$ ]] && echo 'OK' || echo "FAIL ($code)")"
-done
+[ -n "$SPARK_PREFIX" ] && [ -n "$SPARK_DOMAIN" ] || { echo "FAIL .env non charge (SPARK_PREFIX/SPARK_DOMAIN vides)"; false; }
+probe() {  # service, chemin, marqueur attendu dans le corps
+  body=$(curl -s -m 10 -H "Host: ${SPARK_PREFIX}-$1.${SPARK_DOMAIN}" \
+    "http://127.0.0.1:${SPARK_HOST_HTTP_PORT:-18080}$2" 2>/dev/null || true)
+  case "$body" in
+    *"$3"*) printf "  %-6s OK\n" "-$1" ;;
+    *) printf "  %-6s FAIL (%s : corps « %.60s »)\n" "-$1" "$2" "$body"; false ;;
+  esac
+}
+probe n8n /healthz '"status":"ok"'
+probe db  /api/v1/health '"message":"OK"'
 docker compose ps --format "table {{.Name}}\t{{.Image}}\t{{.Status}}"
 ```
 
-Les services tournent et repondent via Caddy sur `127.0.0.1:18080`, mais ne sont pas encore accessibles depuis l'exterieur. La colonne `IMAGE` doit afficher les tags du `compose.yml` (`postgres:16.16-alpine`, `n8nio/n8n:2.19.4`, `nocodb/nocodb:2026.04.5`, `caddy:2.11.9-alpine`), et `postgres` doit etre `healthy`.
+Les services tournent et repondent via Caddy sur `127.0.0.1:18080`, mais ne sont pas encore accessibles depuis l'exterieur. La colonne `IMAGE` affiche chaque image telle que le `compose.yml` la fige, **tag suivi du digest** (`postgres:16.16-alpine@sha256:...`, `n8nio/n8n:2.19.4@sha256:...`, `nocodb/nocodb:2026.04.5@sha256:...`, `caddy:2.11.9-alpine@sha256:...`), et `postgres` doit etre `healthy`.
+
+> **Limite connue.** Un `Host` inconnu (`curl -H "Host: nimporte.quoi" http://127.0.0.1:18080/`) recoit aujourd'hui `200` et un corps vide, pas un `404` : d'ou les sondes par marqueur. L'attrape-tout `404` du Caddyfile vient avec un lot suivant du kit.
 
 ### Installer le service systemd
 
@@ -329,8 +340,11 @@ ls -la ~/infra/backups/
 
 Attendu :
 - `backup.sh` ecrit `pg_dumpall-<date>.sql.gz`, un `vol-<volume>-<date>.tgz` par volume hors Postgres (`n8n_data`, `nocodb_data`, `caddy_data`, `caddy_config`), `secrets-<date>.tar.age`, et termine par `sauvegarde ... complete`.
-- `restore-test.sh` demarre un Postgres jetable avec la meme image, rejoue le dump, affiche `restauration rejouee : 1 erreur(s), toutes attendues` (le role `postgres` existe deja), les comptes de bases, de tables et de migrations n8n, puis `test de restauration OK`. Tant qu'aucun identifiant n8n n'existe (avant l'etape 6), il affiche un **avertissement** « aucun identifiant n8n dans la base » : relancer le test apres avoir cree un identifiant dans n8n pour que le controle de dechiffrement porte sur quelque chose.
+- `restore-test.sh` demarre un Postgres jetable avec la meme image, rejoue le dump, affiche `restauration rejouee : 1 erreur(s), toutes attendues` (le role `postgres` existe deja), les comptes de bases, de tables et de migrations n8n, puis compte les identifiants n8n dans la copie. **A ce stade il n'y en a aucun** (le premier acces n8n est l'etape 6) : le script affiche `AVERTISSEMENT : aucun identifiant n8n dans la base, dechiffrement non verifie`, puis `test de restauration OK`, et sort en code 0. Le controle de dechiffrement ne porte sur rien tant qu'un identifiant n'existe pas ; l'etape 6 en cree un et rend ce controle obligatoire.
 - Les deux ecrivent `backups/LAST_OK` et `backups/RESTORE_TEST_OK` (horodatage).
+- `backup.sh` refuse d'ecrire quoi que ce soit si `BACKUP_AGE_RECIPIENT` est vide (ou si `age` manque) : une sauvegarde sans ses secrets n'est pas une sauvegarde. Chaque fichier est produit en `.part` et renomme seulement quand tout est controle.
+
+> **`RESTORE_TEST_REQUIRE_CREDENTIAL`** (dans `.env`, `0` par defaut). A `1`, une base sans identifiant n8n fait **echouer** le test de restauration (code 2, alerte) au lieu d'un avertissement. A activer en production une fois l'etape 6 faite : c'est ce qui garantit que la cle `N8N_ENCRYPTION_KEY` sauvegardee dechiffre bien ce qu'il y a en base. Pour l'essayer tout de suite : `RESTORE_TEST_REQUIRE_CREDENTIAL=1 ~/infra/scripts/restore-test.sh` doit sortir en erreur « aucun identifiant n8n dans la base ».
 
 ```bash
 exit   # quitter le shell spark
@@ -577,7 +591,18 @@ nano ~/infra/.env
 #   NOCODB_API_TOKEN=<token>
 ```
 
-Relancer, puis rejouer le test de restauration maintenant qu'un identifiant n8n existe (le controle de dechiffrement doit afficher `1 dechiffre(s)` au moins) :
+### Creer un identifiant n8n et rendre son dechiffrement obligatoire
+
+Une cle API n'est **pas** un identifiant (*credential*) n8n. Creer dans n8n un premier identifiant, meme de test : Credentials > Add credential > *Header Auth*, nom `spark-restore-test`, n'importe quelle valeur. C'est ce que le test de restauration dechiffre chaque nuit sur la copie pour prouver que la cle sauvegardee est la bonne.
+
+Puis rendre l'absence d'identifiant fatale pour le test de restauration :
+
+```bash
+sed -i 's/^RESTORE_TEST_REQUIRE_CREDENTIAL=.*/RESTORE_TEST_REQUIRE_CREDENTIAL=1/' ~/infra/.env
+grep -c '^RESTORE_TEST_REQUIRE_CREDENTIAL=1$' ~/infra/.env   # attendu : 1
+```
+
+Relancer, puis rejouer sauvegarde et test de restauration : le controle de dechiffrement doit afficher `identifiants n8n : 1 exporte(s), 1 dechiffre(s)` (au moins), plus d'avertissement :
 
 ```bash
 cd ~/infra && docker compose up -d
@@ -607,22 +632,26 @@ echo "=== Containers ==="
 sudo -u spark docker compose -f /opt/spark/infra/compose.yml ps \
   --format "table {{.Name}}\t{{.Status}}"
 
-echo "=== Caddy → services ==="
-set -a; . /opt/spark/infra/.env; set +a
-for svc in n8n db; do
-  host="${SPARK_PREFIX}-${svc}.${SPARK_DOMAIN}"
-  code=$(curl -s -o /dev/null -w "%{http_code}" \
-    -H "Host: $host" \
-    "http://localhost:${SPARK_HOST_HTTP_PORT:-18080}" 2>/dev/null || echo "000")
-  printf "  %-15s %s\n" "$svc" \
-    "$([[ $code =~ ^(200|301|302)$ ]] && echo 'OK' || echo "FAIL ($code)")"
-done
-
-echo "=== Tunnel HTTPS ==="
-curl -sI "https://${SPARK_PREFIX}-n8n.${SPARK_DOMAIN}" | head -1
+echo "=== Caddy → services (lu sous spark : .env est en 600) ==="
+sudo -u spark bash -c '
+  set -a; . /opt/spark/infra/.env; set +a
+  [ -n "$SPARK_PREFIX" ] && [ -n "$SPARK_DOMAIN" ] || { echo "  FAIL .env non charge (SPARK_PREFIX/SPARK_DOMAIN vides)"; exit 1; }
+  probe() {
+    body=$(curl -s -m 10 -H "Host: ${SPARK_PREFIX}-$1.${SPARK_DOMAIN}" \
+      "http://127.0.0.1:${SPARK_HOST_HTTP_PORT:-18080}$2" 2>/dev/null || true)
+    case "$body" in
+      *"$3"*) printf "  %-6s OK\n" "-$1" ;;
+      *) printf "  %-6s FAIL (%s : corps « %.60s »)\n" "-$1" "$2" "$body"; return 1 ;;
+    esac
+  }
+  probe n8n /healthz "\"status\":\"ok\""
+  probe db  /api/v1/health "\"message\":\"OK\""
+  echo "=== Tunnel HTTPS ==="
+  curl -sI -m 10 "https://${SPARK_PREFIX}-n8n.${SPARK_DOMAIN}" | head -1
+'
 ```
 
-Tout doit afficher OK. Si un service manque, verifier :
+Tout doit afficher OK. Le bloc Caddy tourne sous `spark` parce que `.env` est en `600` : lance par l'administrateur, `. /opt/spark/infra/.env` echouerait en silence, les variables resteraient vides et la sonde interrogerait `Host: -n8n.` — d'ou le garde-fou sur `SPARK_PREFIX`/`SPARK_DOMAIN`. Si un service manque, verifier :
 
 ```bash
 sudo systemctl status spark-compose.service

@@ -11,7 +11,7 @@
 - Stack `docker-compose.yml` parametree par variables (host/domain/prefix/port)
 - Reverse-proxy Caddy lit ses vhosts depuis `${SPARK_PREFIX}` / `${SPARK_DOMAIN}`
 - `.env.example` couvre les 10 variables necessaires
-- Scripts `tunnel-up.sh` / `tunnel-down.sh` idempotents, edition par bloc marque
+- Scripts `tunnel-up.sh` / `tunnel-down.sh` idempotents, edition par bloc marque *(prevus : pas encore dans `deploy/scripts/` ; la procedure manuelle est l'etape 4 des guides)*
 - Pattern A (local-managed) verrouille et documente
 - Postgres + n8n + NocoDB + Caddy fonctionnels
 - Cloudflare Tunnel (pattern A, local-managed) integre des le deploiement
@@ -72,7 +72,7 @@ Implementer le script du doc archi, avec les corrections post-incident :
 
 - Creation tunnel : `cloudflared tunnel create spark-<site>`
 - Generation `.env` avec secrets URL-safe
-- Lance `tunnel-up.sh` → routes + CNAMEs
+- Lance `tunnel-up.sh` → routes + CNAMEs *(prevu ; aujourd'hui `cloudflared tunnel route dns`, etape 4 des guides)*
 - Lance `docker compose up -d`
 
 Pre-requis manuel : `cloudflared login` (1x par compte CF).

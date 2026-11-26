@@ -2,7 +2,14 @@
 
 > Spark est concu pour etre opere avec un agent IA. Ce guide configure l'outillage Claude Code et valide la liaison avec un smoke test.
 
-Pre-requis : stack installee et premier acces fait ([INSTALL.md](INSTALL.md)). Retour au [README](README.md) pour le contexte.
+Pre-requis : stack installee et premier acces fait ([INSTALL.md](INSTALL.md) ou [INSTALL-LINUX.md](INSTALL-LINUX.md)). Retour au [README](README.md) pour le contexte.
+
+**Racine du site.** Les deux parcours n'ont pas la meme arborescence : `~/spark/` sur le Mac (bac a sable), `/opt/spark/` sur Linux (home de l'utilisateur `spark`, qui lance Claude Code). Les commandes ci-dessous ecrivent `$SPARK_ROOT` ; poser une fois par shell :
+
+```bash
+SPARK_ROOT=~/spark        # macOS (INSTALL.md)
+SPARK_ROOT=/opt/spark     # Linux (INSTALL-LINUX.md), dans le shell de l'utilisateur spark
+```
 
 ---
 
@@ -11,7 +18,7 @@ Pre-requis : stack installee et premier acces fait ([INSTALL.md](INSTALL.md)). R
 Les skills donnent a l'agent la doc de reference et le CLI `nocodb.sh` (seul canal d'acces stable a NocoDB pour l'agent). Elles sont embarquees dans le repo templates :
 
 ```bash
-cd ~/spark/templates/skills
+cd "$SPARK_ROOT/templates/skills"
 cp -R nocodb spark-* ~/.claude/skills/
 ```
 
@@ -23,42 +30,28 @@ Les 7 skills n8n (`n8n-workflow-patterns`, `n8n-node-configuration`, etc.) sont 
 
 ## Configurer le MCP n8n
 
-Le MCP n8n est lance **a la demande** par Claude Code (via `docker run`, pas dans le compose — ca economise ~512 Mo de RAM permanente). Il reste a creer le script de connexion et configurer Claude Code.
+Le MCP n8n est lance **a la demande** par Claude Code (via `docker run`, pas dans le compose — ca economise ~512 Mo de RAM permanente). Le script de connexion est fourni par le kit ; il reste a configurer Claude Code.
 
 Pour NocoDB, **pas de MCP** : l'agent passe par le CLI `nocodb.sh` de la skill `nocodb` (API v3, PAT). Raison : aucun package MCP NocoDB n'est aujourd'hui compatible avec les versions recentes de NocoDB (2026.04.5+) — cf. INC-02. La doc se tient au canal qui fonctionne maintenant.
 
-### Creer le script wrapper
+### Le script wrapper vient du kit
 
-**`infra/scripts/mcp-n8n.sh`** — connecte Claude Code a n8n via le reseau Docker (meme chemin que dans `.mcp.json` ci-dessous ; a creer depuis `~/spark/`) :
+**`infra/scripts/mcp-n8n.sh`** est l'un des scripts de `deploy/scripts/` copies a l'etape 2 des guides (`cp .../deploy/scripts/*.sh infra/scripts/`) : rien a ecrire a la main. Il lit `N8N_API_KEY` dans `infra/.env` (passe au conteneur par `-e N8N_API_KEY`, jamais sur la ligne de commande), rejoint le reseau du projet compose (`<name>_spark`, deduit de `compose.yml`) et lance l'image `ghcr.io/czlonkowski/n8n-mcp`, **figee par tag et digest** comme celles du compose (jamais `:latest`). Verifier qu'il est en place :
 
 ```bash
-cd ~/spark
-cat > infra/scripts/mcp-n8n.sh <<'MCP'
-#!/usr/bin/env bash
-set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-source "$SCRIPT_DIR/../.env"
-exec docker run -i --rm \
-  --network spark_spark \
-  -e MCP_MODE=stdio \
-  -e LOG_LEVEL=error \
-  -e DISABLE_CONSOLE_OUTPUT=true \
-  -e "N8N_API_URL=http://n8n:5678" \
-  -e "N8N_API_KEY=${N8N_API_KEY}" \
-  -e N8N_MCP_TELEMETRY_DISABLED=true \
-  -e WEBHOOK_SECURITY_MODE=permissive \
-  ghcr.io/czlonkowski/n8n-mcp:latest
-MCP
-chmod +x infra/scripts/mcp-n8n.sh
+cd "$SPARK_ROOT"
+test -x infra/scripts/mcp-n8n.sh && echo "mcp-n8n.sh: OK" || echo "mcp-n8n.sh: ABSENT (refaire l'etape 2 des guides : cp deploy/scripts/*.sh)"
+grep -o 'n8n-mcp:[^@"]*' infra/scripts/mcp-n8n.sh     # version figee
 ```
 
-> Le reseau `spark_spark` correspond au projet compose `spark` (`name:` dans `infra/compose.yml`) + le reseau `spark`. Si vous avez change le `name:`, adaptez en consequence.
+> Monter la version du MCP = changer la ligne `N8N_MCP_IMAGE` dans `deploy/scripts/mcp-n8n.sh` du kit, puis `deploy/scripts/pin-digests.sh deploy/scripts/mcp-n8n.sh`, puis recopier le script dans `infra/scripts/` (section « Mettre a jour la stack depuis le kit » des guides).
 
 ### Creer .mcp.json
 
-Creer `.mcp.json` a la racine du repo (gitignored) — uniquement n8n :
+Creer `.mcp.json` a la racine du site (`$SPARK_ROOT`, gitignored) — uniquement n8n. C'est un fichier local de Claude Code, pas un fichier d'infra : il reste en heredoc.
 
 ```bash
+cd "$SPARK_ROOT"
 cat > .mcp.json <<'JSON'
 {
   "mcpServers": {
@@ -137,8 +130,8 @@ Le smoke test est un test de plomberie automatise : il verifie que **n8n et Noco
 Copier le briefing agent depuis le repo templates, puis ouvrir Claude Code :
 
 ```bash
-cp ~/spark/templates/CLAUDE.md ~/spark/CLAUDE.md
-cd ~/spark
+cp "$SPARK_ROOT/templates/CLAUDE.md" "$SPARK_ROOT/CLAUDE.md"
+cd "$SPARK_ROOT"
 claude
 ```
 

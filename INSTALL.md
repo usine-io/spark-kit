@@ -167,8 +167,10 @@ Ce que ces copies posent :
 | `config/caddy/sites.d/` | Vhosts additionnels du site, un fichier `.caddy` par vhost (vide au depart) |
 | `scripts/init-env.sh` | Cree le `.env` avec des secrets URL-safe |
 | `scripts/backup.sh`, `scripts/restore-test.sh` | Sauvegarde et test de restauration (voir « Aller plus loin ») |
-| `scripts/pin-digests.sh` | Releve ou controle les digests des images |
-| `scripts/selftest-install.sh` | Rejoue cette etape dans un repertoire temporaire pour verifier le kit |
+| `scripts/pin-digests.sh` | Releve ou controle les digests des images (compose et `mcp-n8n.sh`) |
+| `scripts/mcp-n8n.sh` | Lance le serveur MCP n8n a la demande pour Claude Code (image figee par tag + digest), voir [CLAUDE-CODE.md](CLAUDE-CODE.md) |
+| `scripts/lib.sh` | Fonctions communes (sourcees par les autres scripts) |
+| `scripts/selftest-install.sh` | Verifie le kit : se lance **depuis le kit** (`~/spark/spark-kit/deploy/scripts/selftest-install.sh`), la copie dans `infra/scripts/` s'arrete avec un message qui renvoie au kit |
 
 Verifier que chaque fichier monte par le compose existe bien (un fichier absent serait remplace par un repertoire vide au demarrage, sans erreur) :
 
@@ -191,11 +193,13 @@ Verifier la configuration, sans afficher les secrets :
 
 ```bash
 cd ~/spark/infra
-docker compose config --quiet && echo "compose: OK"
-grep -c '^[A-Z0-9_]*=.' .env
+out=$(docker compose config -q 2>&1); [ -z "$out" ] && echo "compose: OK" || { echo "$out"; false; }
+for v in SPARK_PREFIX SPARK_DOMAIN POSTGRES_ROOT_PASSWORD N8N_DB_PASSWORD NOCODB_DB_PASSWORD N8N_ENCRYPTION_KEY NC_AUTH_JWT_SECRET; do
+  grep -q "^$v=.." .env && echo "OK   $v" || { echo "FAIL $v vide"; false; }
+done
 ```
 
-`docker compose config` ne doit afficher **aucun** avertissement `variable is not set` ; le `grep` compte les variables renseignees (9 attendues a ce stade).
+`compose: OK` ne s'affiche que si `docker compose config` n'a **rien** ecrit : un avertissement `variable is not set` (code de retour 0 pourtant) est affiche a la place et la commande echoue. Compose ne dit rien d'une variable **presente mais vide** (`NOM=`) : la boucle verifie une a une celles qui doivent avoir une valeur.
 
 > `header_up X-Forwarded-Proto https` dans le Caddyfile est obligatoire : Caddy recoit du HTTP depuis cloudflared, mais les apps doivent croire qu'elles sont en HTTPS (sinon n8n refuse les cookies securises).
 
@@ -222,19 +226,26 @@ cd ~/spark/infra
 docker compose up -d
 ```
 
-Verifier que les services repondent via Caddy (attendre ~30 s) :
+Verifier que les services repondent via Caddy (attendre ~30 s). La sonde lit un **marqueur dans le corps** (`/healthz` de n8n, `/api/v1/health` de NocoDB) : Caddy repond `200` et corps vide a tout `Host` inconnu, un code `200` seul ne prouverait rien.
 
 ```bash
 cd ~/spark/infra && set -a && . ./.env && set +a
-for svc in n8n db; do
-  host="${SPARK_PREFIX}-${svc}.${SPARK_DOMAIN}"
-  code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: $host" "http://localhost:${SPARK_HOST_HTTP_PORT:-18080}" 2>/dev/null || echo "000")
-  printf "  %-15s %s\n" "$svc" "$([[ $code =~ ^(200|301|302)$ ]] && echo 'OK' || echo "FAIL ($code)")"
-done
+[ -n "$SPARK_PREFIX" ] && [ -n "$SPARK_DOMAIN" ] || { echo "FAIL .env non charge"; false; }
+probe() {  # service, chemin, marqueur attendu dans le corps
+  body=$(curl -s -m 10 -H "Host: ${SPARK_PREFIX}-$1.${SPARK_DOMAIN}" "http://127.0.0.1:${SPARK_HOST_HTTP_PORT:-18080}$2" 2>/dev/null || true)
+  case "$body" in
+    *"$3"*) printf "  %-6s OK\n" "-$1" ;;
+    *) printf "  %-6s FAIL (%s : corps « %.60s »)\n" "-$1" "$2" "$body"; false ;;
+  esac
+}
+probe n8n /healthz '"status":"ok"'
+probe db  /api/v1/health '"message":"OK"'
 docker compose ps --format "table {{.Name}}\t{{.Image}}\t{{.Status}}"
 ```
 
-A ce stade, les services tournent et repondent via Caddy sur `127.0.0.1:18080`, mais ne sont pas encore accessibles depuis l'exterieur. L'etape suivante ouvre l'acces HTTPS via le tunnel.
+A ce stade, les services tournent et repondent via Caddy sur `127.0.0.1:18080`, mais ne sont pas encore accessibles depuis l'exterieur. La colonne `IMAGE` affiche chaque image **tag suivi du digest** (`postgres:16.16-alpine@sha256:...`), telle que le compose la fige. L'etape suivante ouvre l'acces HTTPS via le tunnel.
+
+> **Limite connue.** Un `Host` inconnu recoit aujourd'hui `200` et un corps vide, pas un `404` : d'ou les sondes par marqueur. L'attrape-tout `404` du Caddyfile vient avec un lot suivant du kit.
 
 ---
 
@@ -389,12 +400,14 @@ colima status && echo "OK" || echo "FAIL"
 echo "=== Containers ==="
 docker ps --format "{{.Names}}\t{{.Status}}" | grep -E "spark"
 
-echo "=== Caddy → services ==="
-for svc in n8n db; do
-  host="${SPARK_PREFIX}-${svc}.${SPARK_DOMAIN}"
-  code=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: $host" "http://localhost:${SPARK_HOST_HTTP_PORT:-18080}" 2>/dev/null || echo "000")
-  printf "  %-15s %s\n" "$svc" "$([[ $code =~ ^(200|301|302)$ ]] && echo 'OK' || echo "FAIL ($code)")"
-done
+echo "=== Caddy → services (marqueur dans le corps, pas seulement le code) ==="
+[ -n "$SPARK_PREFIX" ] && [ -n "$SPARK_DOMAIN" ] || echo "  FAIL .env non charge"
+probe() {
+  body=$(curl -s -m 10 -H "Host: ${SPARK_PREFIX}-$1.${SPARK_DOMAIN}" "http://127.0.0.1:${SPARK_HOST_HTTP_PORT:-18080}$2" 2>/dev/null || true)
+  case "$body" in *"$3"*) printf "  %-6s OK\n" "-$1" ;; *) printf "  %-6s FAIL (%s)\n" "-$1" "$2" ;; esac
+}
+probe n8n /healthz '"status":"ok"'
+probe db  /api/v1/health '"message":"OK"'
 
 echo "=== Tunnel ==="
 curl -sI "https://${SPARK_PREFIX}-n8n.${SPARK_DOMAIN}" | head -1
@@ -477,7 +490,7 @@ grep '^# public key:' ~/spark-backup.key  # -> BACKUP_AGE_RECIPIENT=age1... dans
 
 - **Planification** : un LaunchAgent par script (toutes les 6 h pour `backup.sh`, quotidien pour `restore-test.sh`), sur le modele de `com.spark.cloudflared.plist` ci-dessus ; sur Linux, le kit livre les timers systemd (`deploy/linux/systemd/`).
 - **Couche offsite** : agnostique au provider — un **remote rclone au choix** (S3/MinIO, Backblaze B2, SFTP, WebDAV…). `rclone copy` + retention par age (pas `sync`, qui casserait la retention offsite longue). Les dumps contiennent des secrets : distant chiffre.
-- **Critere de validation** : `restore-test.sh` passe, avec au moins un identifiant n8n dechiffre — un backup non teste n'est pas un backup.
+- **Critere de validation** : `restore-test.sh` passe, avec au moins un identifiant n8n dechiffre — un backup non teste n'est pas un backup. Tant que n8n n'a aucun identifiant (*credential*, pas la cle API), le script avertit et reussit ; des qu'un identifiant existe, poser `RESTORE_TEST_REQUIRE_CREDENTIAL=1` dans `~/spark/infra/.env` pour que son absence fasse echouer le test. `backup.sh` n'ecrit rien sans `BACKUP_AGE_RECIPIENT`.
 
 > Les deux briques sont independantes : on peut poser la sauvegarde sans la securite, ou l'inverse. Les chiffrages sont des ordres de grandeur "premiere fois, a la main" (dashboard, pas IaC).
 
