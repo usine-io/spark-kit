@@ -80,10 +80,11 @@ colima start --cpu 4 --memory 4 --disk 60 --network-address --vm-type vz
 docker info
 ```
 
-Colima doit redemarrer automatiquement apres un reboot. Le LaunchAgent vient du kit (`deploy/macos/launchd/`, le kit est clone a l'etape 2 : cloner d'abord si ce n'est pas fait, `git clone https://github.com/spark-kit/spark-kit.git ~/spark/spark-kit`) ; seul `__HOME__` est substitue a la copie, un plist n'accepte pas de variable :
+Colima doit redemarrer automatiquement apres un reboot. Le LaunchAgent vient du kit (`deploy/macos/launchd/`) : cloner le kit **maintenant** (l'etape 2 s'appuie sur ce clone, elle ne le refait pas) ; seul `__HOME__` est substitue a la copie, un plist n'accepte pas de variable :
 
 ```bash
-mkdir -p ~/Library/LaunchAgents ~/spark/infra/logs
+mkdir -p ~/spark ~/Library/LaunchAgents ~/spark/infra/logs
+git clone https://github.com/spark-kit/spark-kit.git ~/spark/spark-kit
 sed "s|__HOME__|$HOME|g" ~/spark/spark-kit/deploy/macos/launchd/com.spark.colima.plist > ~/Library/LaunchAgents/com.spark.colima.plist
 plutil -lint ~/Library/LaunchAgents/com.spark.colima.plist
 launchctl load ~/Library/LaunchAgents/com.spark.colima.plist
@@ -91,7 +92,7 @@ launchctl load ~/Library/LaunchAgents/com.spark.colima.plist
 
 > Le plist demarre Colima avec `--memory 4` ; sur un Mac 16 Go, remplacer par `6` dans la copie (`~/Library/LaunchAgents/`), pas dans le kit.
 
-> **Chaine de demarrage apres reboot** : auto-login → session utilisateur → LaunchAgent → Colima (Docker) → conteneurs `restart: unless-stopped` (cloudflared compris, profil `tunnel`). Tailscale demarre via Login Items (configure a la premiere ouverture de l'app).
+> **Chaine de demarrage apres reboot** : auto-login → session utilisateur → LaunchAgent → Colima (Docker) → conteneurs `restart: unless-stopped` (et `restart: always` pour cloudflared, profil `tunnel`). Tailscale demarre via Login Items (configure a la premiere ouverture de l'app).
 
 ---
 
@@ -101,16 +102,16 @@ Tout au long de cette etape, remplacer `acme` par le slug de l'entreprise et `ac
 
 **Source unique.** Les fichiers d'infrastructure (compose, Caddyfile, script d'initialisation Postgres, gabarit `.env`, scripts) vivent **une seule fois** dans le depot du kit, sous [`deploy/`](deploy/). Cette etape les **copie** dans `~/spark/infra/` ; rien n'est recopie a la main.
 
-### Cloner le kit et creer l'arborescence
+### Creer l'arborescence et cloner les templates
 
 ```bash
 mkdir -p ~/spark/{infra/{apps,logs,backups,scripts},discovery}
-[ -d ~/spark/spark-kit ] || git clone https://github.com/spark-kit/spark-kit.git ~/spark/spark-kit
+git -C ~/spark/spark-kit log -1 --format='kit : %h %s'   # le kit a ete clone a l'etape 1 (LaunchAgent Colima)
 git clone https://github.com/spark-kit/templates.git ~/spark/templates
 cd ~/spark/infra
 ```
 
-`~/spark/spark-kit` est le kit (ce depot : fichiers d'infra dans `deploy/`, guides). Le repo `templates` contient la methodologie, les skills Claude Code et le smoke test. Toute la suite de l'installation travaille dans `~/spark/infra/`.
+`~/spark/spark-kit` est le kit (ce depot : fichiers d'infra dans `deploy/`, guides), clone a l'etape 1 ; si la ligne `kit : ...` n'apparait pas, `git clone https://github.com/spark-kit/spark-kit.git ~/spark/spark-kit` d'abord. Le repo `templates` contient la methodologie, les skills Claude Code et le smoke test. Toute la suite de l'installation travaille dans `~/spark/infra/`.
 
 ### Copier les fichiers d'infra depuis le kit
 
@@ -183,8 +184,8 @@ Le `compose.yml` est commente ; l'essentiel :
 - PostgreSQL cree des **utilisateurs separes** (n8n, nocodb) avec des mots de passe distincts ; `init-db.sh` ne rejoue jamais sur un volume existant
 - NocoDB utilise `NC_DB_JSON` (objet) et non `NC_DB` (URL) — evite les crashloops si le password contient des caracteres speciaux
 - **Toutes les images sont figees par tag et digest** (jamais `:latest`) : un `pull` surprise = migration de schema sans retour arriere, et une restauration de sauvegarde exige la meme version que la source. Monter une version = la fiche d'[`UPGRADES.md`](UPGRADES.md), jamais un simple changement de tag
-- **`mem_limit` sur chaque service** (n8n 1 Go, NocoDB 900 Mo, Postgres 512 Mo, Caddy 128 Mo) : sans plafond, une rafale d'imports pousse un service a evincer les autres. D'ou la VM Colima a 4 Go minimum. Le tas Node de n8n est borne sous son plafond (`N8N_HEAP_MB`)
-- **n8n** : module `insights` desactive, retention des executions a 7 jours / 150 000, task runner interne par defaut (`docker compose logs n8n` affiche a ce sujet une ligne `deprecation` attendue : le mode externe est le profil `runners`, option bancee), `N8N_PROXY_HOPS=2` (Cloudflare → cloudflared → Caddy)
+- **`mem_limit` sur chaque service**, chacun par une variable du `.env` (`N8N_MEM_LIMIT` 1g, `NOCODB_MEM_LIMIT` 900m, `PG_MEM_LIMIT` 512m, `CADDY_MEM_LIMIT` 128m, `CLOUDFLARED_MEM_LIMIT` 128m) : sans plafond, une rafale d'imports pousse un service a evincer les autres. D'ou la VM Colima a 4 Go minimum. Le tas Node de n8n est borne sous son plafond (`N8N_HEAP_MB + N8N_RUNNERS_HEAP_MB + ~200 Mio <= N8N_MEM_LIMIT`, soit `608 + 192 + 200 = 1000 Mio` sous `1g` par defaut)
+- **n8n** : module `insights` desactive, retention des executions a 7 jours / 150 000, task runner interne par defaut, `N8N_PROXY_HOPS=2` (Cloudflare → cloudflared → Caddy). `docker compose logs n8n` affiche au demarrage **trois lignes attendues** : `DeprecationWarning: Calling client.query() ... pg@9.0` (pilote PostgreSQL embarque), `Failed to start Python task runner in internal mode. because Python 3 is missing` (l'image n8n n'embarque pas Python : le **node Code en Python n'existe qu'avec le sidecar**, profil `runners`, option bancee dans [`UPGRADES.md`](UPGRADES.md) ; en mode interne, JavaScript seulement) et `N8N_RUNNERS_MODE -> Internal task runner mode is deprecated` (le mode externe est ce meme profil). Toute autre ligne `deprecation` est a lire
 - **Healthcheck sur chaque service** (`/healthz/readiness` pour n8n : `/healthz` ment quand la base est morte) ; `docker compose ps` affiche `(healthy)` apres 2 minutes au plus
 - Le MCP n8n n'est **pas** dans le compose — il est lance a la demande par Claude Code via `infra/scripts/mcp-n8n.sh` (voir [CLAUDE-CODE.md](CLAUDE-CODE.md)). Ca economise ~512 Mo de RAM permanente
 - Le repertoire `config/caddy/` est monte en entier : on peut remplacer le Caddyfile, poser un fichier dans `sites.d/` ou le drapeau `MAINTENANCE` puis `caddy reload`, sans redemarrer le conteneur. Les en-tetes de securite, le journal d'acces et le CORS NocoDB sont dans le Caddyfile du kit : rien a poser ; un `Host` inconnu recoit `404`
@@ -261,28 +262,36 @@ cloudflared tunnel create spark-acme
 
 ### 4.3 — Renseigner le tunnel dans le .env
 
-Completer dans `~/spark/infra/.env` (`nano ~/spark/infra/.env`) :
+Completer dans `~/spark/infra/.env` (`nano ~/spark/infra/.env`), **sans toucher a `COMPOSE_PROFILES` pour l'instant** (pose en 4.4, apres validation de la configuration) :
 
 ```
 SPARK_TUNNEL_ID=<UUID affiche ci-dessus>
 SPARK_TUNNEL_DIR=/Users/<votre compte>/.cloudflared
-COMPOSE_PROFILES=tunnel
 CF_API_TOKEN=<token avec scope Zone:DNS:Edit>
 CF_ZONE_ID=<ID de la zone parente>
 ```
 
-> `SPARK_TUNNEL_DIR` en **chemin absolu** (`echo $HOME/.cloudflared` pour le connaitre : docker compose ne developpe ni `~` ni `$HOME`). Le conteneur tourne sous votre compte (`SPARK_UID`/`SPARK_GID`, poses par `init-env.sh`) et lit `<UUID>.json` en `600` tel que `cloudflared tunnel create` l'a ecrit ; le repertoire est monte en lecture seule. `COMPOSE_PROFILES=tunnel` fait entrer `cloudflared` dans tout `docker compose up -d`.
+> `SPARK_TUNNEL_DIR` en **chemin absolu** (`echo $HOME/.cloudflared` pour le connaitre : docker compose ne developpe ni `~` ni `$HOME`). Le conteneur tourne sous votre compte (`SPARK_UID`/`SPARK_GID`, poses par `init-env.sh`) et lit `<UUID>.json` en `600` tel que `cloudflared tunnel create` l'a ecrit ; le repertoire est monte en lecture seule.
 
-### 4.4 — Generer la configuration du tunnel
+### 4.4 — Generer et valider la configuration du tunnel, puis activer le profil
 
 ```bash
 ~/spark/infra/scripts/tunnel-config.sh
 cat ~/.cloudflared/config.yml
 cd ~/spark/infra
-docker compose run --rm --no-deps cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
+docker compose --profile tunnel run --rm --no-deps cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
 ```
 
-Attendu : `config.yml ecrit (container) : tunnel <UUID>, ingress -> http://caddy:80`, le fichier (trois `hostname` vers `http://caddy:80`, `credentials-file: /etc/cloudflared/<UUID>.json` : chemin **dans** le conteneur, `http_status:404` final), puis `Validating rules from /etc/cloudflared/config.yml` et `OK`. Le pattern single-level (`acme-n8n.acme.example`) est obligatoire pour profiter du Universal SSL gratuit de CF. Le script se relance apres tout changement du `.env` (`--check` dit si le fichier est a jour) ; les vhosts ajoutes dans `sites.d/` s'y ajoutent par `SPARK_TUNNEL_EXTRA_HOSTS` dans le `.env`.
+Attendu : `config.yml ecrit (container) : tunnel <UUID>, ingress -> http://caddy:80`, le fichier (trois `hostname` vers `http://caddy:80`, `credentials-file: /etc/cloudflared/<UUID>.json` : chemin **dans** le conteneur, `http_status:404` final), puis `Validating rules from /etc/cloudflared/config.yml` et `OK` (`--profile tunnel` parce que le profil n'est pas encore dans le `.env`). Le pattern single-level (`acme-n8n.acme.example`) est obligatoire pour profiter du Universal SSL gratuit de CF. Le script se relance apres tout changement du `.env` (`--check` dit si le fichier est a jour) ; les vhosts ajoutes dans `sites.d/` s'y ajoutent par `SPARK_TUNNEL_EXTRA_HOSTS='nom.complet.acme.example'` dans le `.env`.
+
+**Seulement maintenant**, activer le profil :
+
+```bash
+sed -i '' 's/^COMPOSE_PROFILES=.*/COMPOSE_PROFILES=tunnel/' ~/spark/infra/.env
+~/spark/infra/scripts/check-env.sh | tail -1
+```
+
+Attendu : `OK   COMPOSE_PROFILES coherent (tunnel)`. `COMPOSE_PROFILES=tunnel` fait entrer `cloudflared` dans tout `docker compose up -d`. Pose avant `tunnel-config.sh`, un `up -d` ou un redemarrage de Colima entre les deux creerait le conteneur sans `config.yml` et il bouclerait en redemarrage (`open /etc/cloudflared/config.yml: no such file`) ; `check-env.sh` refuse un `.env` dans cet etat.
 
 ### 4.5 — Creer les DNS
 
@@ -302,9 +311,11 @@ docker compose ps cloudflared --format "table {{.Name}}\t{{.Image}}\t{{.Status}}
 curl -s -m 5 http://127.0.0.1:2000/ready; echo
 ```
 
-Attendu : `spark-cloudflared-1` `Up` (pas `Restarting`) et `{"status":200,"readyConnections":4,...}` (`readyConnections` > 0 : tunnel etabli). Il redemarre avec Colima (`restart: always`), sans LaunchAgent dedie.
+Attendu : `spark-cloudflared-1` `Up` (pas `Restarting`) et `{"status":200,"readyConnections":4,...}` (`readyConnections` > 0 : tunnel etabli). Il redemarre avec Colima (`restart: always`), sans LaunchAgent dedie. Verifier qu'aucun connecteur hote ne tourne en meme temps : `launchctl list | grep com.spark.cloudflared` ne doit rien afficher.
 
-> **Variante « cloudflared sur l'hote »** (binaire Homebrew + LaunchAgent), si le site la prefere : laisser `COMPOSE_PROFILES` vide, `~/spark/infra/scripts/tunnel-config.sh --host` (ecrit `~/.cloudflared/config-spark.yml`, ingress vers `http://localhost:18080`), `SPARK_TUNNEL_CONFIG=/Users/<compte>/.cloudflared/config-spark.yml` dans le `.env`, puis `sed "s|__HOME__|$HOME|g" ~/spark/spark-kit/deploy/macos/launchd/com.spark.cloudflared.plist > ~/Library/LaunchAgents/com.spark.cloudflared.plist && launchctl load ~/Library/LaunchAgents/com.spark.cloudflared.plist`. Jamais les deux a la fois.
+> **Retirer ou changer de connecteur.** Vider `COMPOSE_PROFILES` **ne retire pas** un conteneur `cloudflared` deja cree : il survit a `docker compose up -d` et au redemarrage de Colima (`restart: always`) et retente le tunnel. Retrait explicite : `cd ~/spark/infra && docker compose --profile tunnel stop cloudflared && docker compose --profile tunnel rm -f cloudflared`, puis `COMPOSE_PROFILES=` dans le `.env`.
+>
+> **Variante « cloudflared sur l'hote »** (binaire Homebrew + LaunchAgent), si le site la prefere : `COMPOSE_PROFILES` vide (et le retrait ci-dessus si le conteneur a deja tourne), `~/spark/infra/scripts/tunnel-config.sh --host` (ecrit `~/.cloudflared/config-spark.yml`, ingress vers `http://localhost:18080` ; c'est le chemin que le plist du kit lit, `__HOME__/.cloudflared/config-spark.yml`, rien a renseigner dans le `.env`), puis `sed "s|__HOME__|$HOME|g" ~/spark/spark-kit/deploy/macos/launchd/com.spark.cloudflared.plist > ~/Library/LaunchAgents/com.spark.cloudflared.plist && launchctl load ~/Library/LaunchAgents/com.spark.cloudflared.plist`. Jamais les deux a la fois ; le plist ne peut pas le verifier seul (l'unit systemd Linux le fait), donc apres toute bascule : `launchctl list | grep com.spark.cloudflared` (une ligne en variante hote, rien sinon) et `docker compose --profile tunnel ps cloudflared --format '{{.Name}} {{.Status}}'` (une ligne `Up` en conteneur, rien sinon) : **exactement l'un des deux**.
 
 ### Verifier
 
@@ -511,7 +522,7 @@ colima start --cpu 4 --memory 6 --disk 60 --network-address --vm-type vz
 
 **Symptome** : `docker compose logs cloudflared` : `Tunnel credentials file ... doesn't exist`, `permission denied` ou `yaml: unmarshal errors`.
 **Cause** : `SPARK_TUNNEL_DIR` n'est pas le chemin absolu de `~/.cloudflared`, `SPARK_TUNNEL_ID` ne correspond pas au `.json`, `SPARK_UID`/`SPARK_GID` ne sont pas ceux du proprietaire, ou `config.yml` a ete edite a la main.
-**Solution** : `~/spark/infra/scripts/tunnel-config.sh --check`, corriger le `.env`, relancer `tunnel-config.sh`, `docker compose up -d`. Sans tunnel (bac a sable local), laisser `COMPOSE_PROFILES` vide : le service ne demarre pas.
+**Solution** : `~/spark/infra/scripts/tunnel-config.sh --check`, corriger le `.env`, relancer `tunnel-config.sh`, `docker compose up -d`. `open /etc/cloudflared/config.yml: no such file` = profil pose avant `tunnel-config.sh` (etape 4.4). Sans tunnel (bac a sable local), laisser `COMPOSE_PROFILES` vide : en premiere installation le conteneur n'est pas cree ; s'il a deja ete cree, vider le profil ne le retire pas : `docker compose --profile tunnel stop cloudflared && docker compose --profile tunnel rm -f cloudflared` (encart de l'etape 4.6).
 
 ---
 

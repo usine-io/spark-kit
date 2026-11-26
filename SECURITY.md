@@ -63,20 +63,22 @@ header {
 
 `X-Frame-Options` est pose par vhost, hors du snippet : `DENY` sur `-n8n` et `-db` (jamais dans une iframe), `SAMEORIGIN` sur `-app` (les apps du site peuvent s'encadrer entre elles). Il est ecrit avec le prefixe `>` (apres la reponse de l'application) : n8n envoie son propre `X-Frame-Options`, sans `>` le navigateur recevait deux valeurs.
 
+**Les reponses d'erreur aussi.** Caddy n'applique pas un bloc `header` differe (toute suppression `-X` le differe) a une reponse d'erreur : un `404` de `file_server` (`-app`, `/apps/<absent>`) ou un `502` sans amont sortait avec `Server: Caddy` et sans ces en-tetes. Le snippet `(securite)` les reimporte donc dans un `handle_errors` (corps `<code> <libelle>`), et l'attrape-tout `404` des `Host` inconnus importe les memes en-tetes : **aucune reponse du kit, erreur comprise, ne porte `Server`**. `selftest-install.sh --up` le verifie sur le `404` d'un `Host` inconnu et sur un `404` de `file_server`.
+
 Notes :
 - `auto_https off` (TLS gere par Cloudflare) implique que Caddy ecoute en HTTP — HSTS est neanmoins servi car Cloudflare en re-emet la version HTTPS au browser final.
 - Pas de CSP dans le bloc standard : NocoDB et n8n font de l'inline-script et de l'eval, un CSP strict casse leur UI. A ajouter en mode `Content-Security-Policy-Report-Only` si besoin de tester, dans un fichier `sites.d/` ou par vhost, pas dans le snippet.
 - `-X-Powered-By` retire le header `Express` envoye par NocoDB (fingerprinting) ; les suppressions different le bloc entier, les valeurs du snippet ecrasent donc celles de l'application.
 - Le meme snippet active le **journal d'acces JSON** (`/var/log/caddy/access.log`, volume `caddy_logs`, rotation 50 Mo x 10).
 - Un `Host` inconnu recoit `404` (bloc attrape-tout `http://`), plus jamais `200` et un corps vide.
-- `trusted_proxies static private_ranges` (options globales) : Caddy conserve le `X-Forwarded-For` ecrit par Cloudflare quand la requete vient de cloudflared (reseau compose ou `127.0.0.1`) ; sans cela il le remplace par l'IP de cloudflared et n8n (`N8N_PROXY_HOPS=2`) attribue la meme IP a tous les visiteurs. Un client sur une plage privee peut donc forger cet en-tete : c'est pourquoi Caddy n'est joignable que sur `127.0.0.1` et par le tunnel (`UPGRADES.md`, mesure).
+- `trusted_proxies static private_ranges` + `trusted_proxies_strict` (options globales) : Caddy conserve le `X-Forwarded-For` ecrit par Cloudflare quand la requete vient de cloudflared (reseau compose ou `127.0.0.1`) ; sans cela il le remplace par l'IP de cloudflared et n8n (`N8N_PROXY_HOPS=2`) attribue la meme IP a tous les visiteurs. `strict` fait de `request.client_ip` (journal d'acces) l'element le plus a **droite** de l'en-tete qui n'est pas un proxy de confiance, le meme que n8n retient avec `2` ; sans `strict`, c'etait l'element le plus a gauche, forgeable par le visiteur, et le journal pouvait contredire n8n (mesure dans `UPGRADES.md`). Un client sur une plage privee peut forger cet en-tete : c'est pourquoi Caddy n'est joignable que sur `127.0.0.1` et par le tunnel. La reference pour confirmer l'IP d'un visiteur reste `Cf-Connecting-Ip`, ecrit par Cloudflare.
 
 Verification runtime (via le tunnel, ou en local avec `-H "Host: ..."` sur `http://127.0.0.1:18080`) :
 ```bash
 curl -sSI https://acme-n8n.acme.example/ | \
   grep -iE "strict-transport|x-frame|x-content-type|referrer-policy|permissions-policy|^server|x-powered-by"
 ```
-Attendu : les cinq en-tetes, une seule valeur chacun, et ni `Server` ni `X-Powered-By`. `deploy/scripts/selftest-install.sh --up` fait ce controle sur chaque vhost du kit.
+Attendu : les cinq en-tetes, une seule valeur chacun, et ni `Server` ni `X-Powered-By` ; meme chose sur un `404` (`curl -sSI -H "Host: inconnu.acme.example" http://127.0.0.1:18080/`, `X-Frame-Options` excepte : il est pose par vhost). `deploy/scripts/selftest-install.sh --up` fait ce controle sur chaque vhost du kit et sur deux reponses `404`.
 
 ### 2.3 Override CORS sur NocoDB
 

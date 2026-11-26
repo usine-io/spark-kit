@@ -131,12 +131,14 @@ cloudflared --version
 ### 1.4 — Installer les outils
 
 ```bash
-sudo apt-get install -y jq curl git tmux python3 age
+sudo apt-get install -y jq curl git tmux python3 age shellcheck
 ```
 
 > `python3` est present par defaut sur Debian mais explicite ici : les jobs planifies
 > Spark (controles quotidiens, notifications) en dependent — stdlib uniquement,
-> aucun pip requis. `age` chiffre les secrets dans les sauvegardes (etape 3.b).
+> aucun pip requis. `age` chiffre les secrets dans les sauvegardes (etape 3.b). `shellcheck`
+> sert a `selftest-install.sh` (section « Verifier le kit lui-meme ») : sans lui, le selftest
+> affiche `INFO  shellcheck absent : non joue` et passe quand meme, la ligne `OK    shellcheck sans remarque` manque.
 
 ### 1.5 — Configurer le pare-feu
 
@@ -253,8 +255,8 @@ Le `compose.yml` est commente ; l'essentiel :
   que la source** (vecu chez une PME : un serveur en `:latest` face a une prod
   figee sur une version plus ancienne — a realigner avant tout transfert de donnees). Monter une version
   = suivre la fiche d'[`UPGRADES.md`](UPGRADES.md) (jamais un simple changement de tag : banc sur copie, retour arriere ecrit)
-- **`mem_limit` sur chaque service** (n8n 1 Go, NocoDB 900 Mo, Postgres 512 Mo, Caddy 128 Mo, variables `*_MEM_LIMIT` du `.env`) : sans plafond, une rafale d'imports pousse un
-  service a evincer les autres, et c'est Postgres que le noyau tue en premier (incidents OOM vecus chez une PME). Pour n8n, le tas Node est borne sous le plafond : `N8N_HEAP_MB + N8N_RUNNERS_HEAP_MB + ~200 Mo <= N8N_MEM_LIMIT`
+- **`mem_limit` sur chaque service**, chacun par une variable du `.env` : `N8N_MEM_LIMIT` (1g), `NOCODB_MEM_LIMIT` (900m), `PG_MEM_LIMIT` (512m), `CADDY_MEM_LIMIT` (128m), `CLOUDFLARED_MEM_LIMIT` (128m, profil `tunnel`), `N8N_RUNNERS_MEM_LIMIT` (512m, profil `runners`) : sans plafond, une rafale d'imports pousse un
+  service a evincer les autres, et c'est Postgres que le noyau tue en premier (incidents OOM vecus chez une PME). Pour n8n, le tas Node est borne sous le plafond : `N8N_HEAP_MB + N8N_RUNNERS_HEAP_MB + ~200 Mio <= N8N_MEM_LIMIT`, soit par defaut `608 + 192 + 200 = 1000 Mio` sous `1g` (1024 Mio)
 - **n8n** : module `insights` desactive (un workflow execute puis supprime en moins de 30 s empoisonnait son tampon, n8n ralentissait chaque jour), retention des executions a 7 jours / 150 000 (`execution_data` representait l'essentiel de la base), task runner **interne** par defaut (le sidecar `runners` est une option bancee, voir `UPGRADES.md`), `N8N_PROXY_HOPS=2` (Cloudflare → cloudflared → Caddy ; une valeur trop basse donne la meme IP a tous les utilisateurs et fausse le limiteur de connexions). Jamais de `N8N_CONCURRENCY_PRODUCTION_LIMIT` sans banc de charge
 - **Healthcheck sur chaque service** : Postgres (`pg_isready`), n8n (`/healthz/readiness`, le seul qui dise vrai : `/healthz` repond `ok` avec une base morte), NocoDB (`/api/v1/health`), Caddy (un vhost reel, avec `Host` et lecture du corps). `docker compose ps` affiche `(healthy)` quand tout est pret ; n8n a 2 minutes de grace (`start_period`) parce que les migrations d'une montee de version prennent de l'ordre d'une minute et qu'il ne faut **pas** le redemarrer pendant
 - Le repertoire `config/caddy/` est monte en entier : on peut remplacer le Caddyfile, poser un fichier dans `sites.d/` ou le drapeau `MAINTENANCE` (503 sur tous les vhosts, `UPGRADES.md`) puis `caddy reload`, sans redemarrer le conteneur. Tant que `sites.d/` ne contient aucun fichier `.caddy` (c'est le cas apres l'installation : seul `.keep` s'y trouve), Caddy ecrit a chaque demarrage, a chaque `validate` et a chaque `reload` un avertissement `No files matching import glob pattern` avec le motif `/etc/caddy/sites.d/*.caddy` : **attendu, sans gravite**, il disparait au premier vhost pose. Au demarrage, `docker compose logs caddy` montre aussi `HTTP/2 skipped because it requires TLS` et `HTTP/3 skipped because it requires TLS` : attendus eux aussi, Caddy ne sert que du HTTP en interne, le TLS est chez Cloudflare
@@ -297,7 +299,12 @@ docker compose ps --format "table {{.Name}}\t{{.Image}}\t{{.Status}}"
 
 Les services tournent et repondent via Caddy sur `127.0.0.1:18080`, mais ne sont pas encore accessibles depuis l'exterieur. La colonne `IMAGE` affiche chaque image telle que le `compose.yml` la fige, **tag suivi du digest** (`postgres:16.16-alpine@sha256:...`, `n8nio/n8n:2.49.6@sha256:...`, `nocodb/nocodb:2026.04.5@sha256:...`, `caddy:2.11.9-alpine@sha256:...`). La colonne `STATUS` passe a `(healthy)` pour les **quatre** services : tout de suite pour Postgres, en moins de 2 minutes pour n8n, NocoDB et Caddy (`health: starting` entre-temps est normal : periode de grace des healthchecks). `cloudflared` n'apparait pas encore : il demarre avec le profil `tunnel` a l'etape 4.
 
-> `docker compose logs n8n` montre au demarrage une ligne `There is a deprecation related to your n8n setup` suivie de `N8N_RUNNERS_MODE -> Internal task runner mode is deprecated` : **attendue**. Le kit garde le runner interne par defaut (un processus de moins, une memoire bornee ensemble) ; le mode externe est le profil `runners`, a adopter apres le banc d'[`UPGRADES.md`](UPGRADES.md). Toute autre ligne `deprecation` est a lire.
+> `docker compose logs n8n` montre au demarrage **trois lignes attendues** (n8n 2.49.6, runner interne) :
+> 1. `(node:7) DeprecationWarning: Calling client.query() when the client is already executing a query is deprecated and will be removed in pg@9.0.` (pilote PostgreSQL embarque dans n8n, rien a faire) ;
+> 2. `Failed to start Python task runner in internal mode. because Python 3 is missing from this system.` : l'image n8n n'embarque pas Python, le **node Code en Python n'est disponible qu'avec le sidecar** (profil `runners`, qui l'embarque) ; en mode interne, seul le JavaScript est disponible, et c'est voulu ;
+> 3. `There is a deprecation related to your n8n setup` suivie de `N8N_RUNNERS_MODE -> Internal task runner mode is deprecated` : le kit garde le runner interne par defaut (un processus de moins, une memoire bornee ensemble) ; le mode externe est le profil `runners`, a adopter apres le banc d'[`UPGRADES.md`](UPGRADES.md).
+>
+> Puis `Registered runner "JS Task Runner"`. Toute autre ligne `deprecation` ou `error` est a lire.
 
 ### Installer le service systemd
 
@@ -459,35 +466,41 @@ cloudflared tunnel create spark-<prefix>
 nano ~/infra/.env
 ```
 
-Completer (toujours dans le shell `spark`) :
+Completer (toujours dans le shell `spark`), **sans toucher a `COMPOSE_PROFILES` pour l'instant** (il est pose en 4.4, apres la generation et la validation de la configuration) :
 
 ```
 SPARK_TUNNEL_ID=<UUID affiche ci-dessus>
 SPARK_TUNNEL_DIR=/opt/spark/.cloudflared
-COMPOSE_PROFILES=tunnel
 CF_API_TOKEN=<token avec scope Zone:DNS:Edit>
 CF_ZONE_ID=<ID de la zone parente>
 ```
 
-> `SPARK_TUNNEL_DIR` est le repertoire que `cloudflared login` et `tunnel create` viennent de remplir (`cert.pem`, `<UUID>.json`) ; le compose le monte **en lecture seule** dans le conteneur, qui tourne sous l'utilisateur `spark` (`SPARK_UID`/`SPARK_GID`, poses a l'etape 2.3) et lit donc ces fichiers en `600` sans `chown`. `COMPOSE_PROFILES=tunnel` fait entrer le service `cloudflared` dans tout `docker compose up -d`, y compris celui de `spark-compose.service` au demarrage. `SPARK_TUNNEL_CONFIG` reste vide (variante hote seulement).
+> `SPARK_TUNNEL_DIR` est le repertoire que `cloudflared login` et `tunnel create` viennent de remplir (`cert.pem`, `<UUID>.json`) ; le compose le monte **en lecture seule** dans le conteneur, qui tourne sous l'utilisateur `spark` (`SPARK_UID`/`SPARK_GID`, poses a l'etape 2.3) et lit donc ces fichiers en `600` sans `chown`. La variante hote (encart de 4.6) n'a pas de variable propre : le chemin de `config-spark.yml` est code dans l'unit systemd.
 
-### 4.4 — Generer la configuration du tunnel
+### 4.4 — Generer et valider la configuration du tunnel, puis activer le profil
 
 ```bash
 ~/infra/scripts/tunnel-config.sh
 cat /opt/spark/.cloudflared/config.yml
 ```
 
-Attendu : `config.yml ecrit (container) : tunnel <UUID>, ingress -> http://caddy:80`, puis le fichier : `tunnel`, `credentials-file: /etc/cloudflared/<UUID>.json` (chemin **dans** le conteneur), trois `hostname` vers `http://caddy:80` et le `http_status:404` final. Le script refuse d'ecrire si `<UUID>.json` manque ou si `SPARK_TUNNEL_ID` n'est pas un UUID ; il se relance apres tout changement du `.env` (`--check` dit si le fichier est a jour). Un vhost ajoute dans `sites.d/` s'ajoute a l'ingress par `SPARK_TUNNEL_EXTRA_HOSTS="nom.complet.<domain>"` dans le `.env`, puis `tunnel-config.sh` de nouveau.
+Attendu : `config.yml ecrit (container) : tunnel <UUID>, ingress -> http://caddy:80`, puis le fichier : `tunnel`, `credentials-file: /etc/cloudflared/<UUID>.json` (chemin **dans** le conteneur), trois `hostname` vers `http://caddy:80` et le `http_status:404` final. Le script refuse d'ecrire si `<UUID>.json` manque ou si `SPARK_TUNNEL_ID` n'est pas un UUID ; il se relance apres tout changement du `.env` (`--check` dit si le fichier est a jour). Un vhost ajoute dans `sites.d/` s'ajoute a l'ingress par `SPARK_TUNNEL_EXTRA_HOSTS='nom.complet.<domain>'` dans le `.env` (ligne presente, vide, dans `env.example`), puis `tunnel-config.sh` de nouveau.
 
-Valider l'ingress avec l'image du compose (aucune connexion a Cloudflare, aucun jeton requis) :
+Valider l'ingress avec l'image du compose (aucune connexion a Cloudflare, aucun jeton requis ; `--profile tunnel` parce que le profil n'est pas encore dans le `.env`) :
 
 ```bash
 cd ~/infra
-docker compose run --rm --no-deps cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
+docker compose --profile tunnel run --rm --no-deps cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate
 ```
 
-Attendu : `Validating rules from /etc/cloudflared/config.yml` puis `OK`.
+Attendu : `Validating rules from /etc/cloudflared/config.yml` puis `OK`. **Seulement maintenant**, activer le profil et verifier la coherence :
+
+```bash
+sed -i 's/^COMPOSE_PROFILES=.*/COMPOSE_PROFILES=tunnel/' ~/infra/.env
+~/infra/scripts/check-env.sh | tail -1
+```
+
+Attendu : `OK   COMPOSE_PROFILES coherent (tunnel)`. `COMPOSE_PROFILES=tunnel` fait entrer le service `cloudflared` dans tout `docker compose up -d`, y compris celui de `spark-compose.service` au demarrage et le `reload`. Il est pose **apres** `tunnel-config.sh` et la validation : pose avant, un `reload` ou un reboot entre les deux creerait le conteneur sans `config.yml` et il bouclerait en redemarrage (`open /etc/cloudflared/config.yml: no such file`). `check-env.sh` refuse (`FAIL COMPOSE_PROFILES : profil tunnel sans .../config.yml`) un `.env` dans cet etat.
 
 ### 4.5 — Creer les DNS
 
@@ -509,9 +522,11 @@ curl -s -m 5 http://127.0.0.1:2000/ready; echo
 
 Attendu : `spark-cloudflared-1` `Up` (pas `Restarting`), puis `{"status":200,"readyConnections":4,...}` : `readyConnections` superieur a 0 est le signe que le tunnel est etabli. `docker compose logs cloudflared` montre `Registered tunnel connection` (quatre fois). Le port `127.0.0.1:2000` (`SPARK_TUNNEL_METRICS_PORT`) n'est joignable que depuis le serveur : c'est la sonde locale du tunnel.
 
-> ⚠️ **Un seul connecteur.** Le paquet apt peut avoir cree/active son propre `cloudflared.service` (config dans `/etc/cloudflared/`) ; deux connecteurs sur deux configs differentes se disputent le tunnel. Verifier qu'aucun service hote ne tourne : `systemctl list-unit-files | grep cloudflared` puis, s'il est `enabled`, `sudo systemctl disable --now cloudflared.service` (depuis le compte administrateur). Vecu chez une PME : l'installation avait fini sur le service du paquet, fonctionnel mais non documente.
+> ⚠️ **Un seul connecteur.** Le paquet apt peut avoir cree/active son propre `cloudflared.service` (config dans `/etc/cloudflared/`) ; deux connecteurs sur deux configs differentes se disputent le tunnel. Verifier qu'aucun service hote ne tourne : `systemctl is-active cloudflared.service spark-cloudflared.service` (attendu : `inactive` deux fois) puis, si l'un est `active` ou `enabled` (`systemctl list-unit-files | grep cloudflared`), `sudo systemctl disable --now <unit>` (depuis le compte administrateur). Vecu chez une PME : l'installation avait fini sur le service du paquet, fonctionnel mais non documente.
 
-> **Variante « cloudflared sur l'hote »** (binaire apt + unit systemd), si le site la prefere : laisser `COMPOSE_PROFILES` vide, `~/infra/scripts/tunnel-config.sh --host` (ecrit `config-spark.yml`, ingress vers `http://localhost:18080`), `SPARK_TUNNEL_CONFIG=/opt/spark/.cloudflared/config-spark.yml` dans le `.env`, puis `sudo cp /opt/spark/spark-kit/deploy/linux/systemd/spark-cloudflared.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now spark-cloudflared.service`. Jamais les deux a la fois. La bascule hote → conteneur d'un site existant est une fiche d'[`UPGRADES.md`](UPGRADES.md).
+> **Retirer ou changer de connecteur.** Vider `COMPOSE_PROFILES` dans le `.env` **ne retire pas** un conteneur `cloudflared` deja cree : il survit au `reload` et au reboot (`restart: always`) et continue de retenter le tunnel. Le retrait est toujours explicite : `cd ~/infra && docker compose --profile tunnel stop cloudflared && docker compose --profile tunnel rm -f cloudflared`, puis `COMPOSE_PROFILES=` dans le `.env`. Verifier ensuite `docker compose --profile tunnel ps cloudflared` (vide).
+
+> **Variante « cloudflared sur l'hote »** (binaire apt + unit systemd), si le site la prefere : `COMPOSE_PROFILES` vide (et, si le conteneur a deja tourne, le retrait ci-dessus d'abord), `~/infra/scripts/tunnel-config.sh --host` (ecrit `/opt/spark/.cloudflared/config-spark.yml`, ingress vers `http://localhost:18080` ; ce chemin est celui que l'unit du kit lit), puis `sudo cp /opt/spark/spark-kit/deploy/linux/systemd/spark-cloudflared.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now spark-cloudflared.service`. Jamais les deux a la fois : l'unit **refuse de demarrer** (`ExecStartPre`, cause dans `journalctl -u spark-cloudflared.service`) tant qu'un conteneur `spark-cloudflared-1` tourne. Controle qu'un seul connecteur tourne, a refaire apres toute bascule : `systemctl is-active spark-cloudflared.service` (`active` en variante hote, `inactive` sinon) et `docker compose --profile tunnel ps cloudflared --format '{{.Name}} {{.Status}}'` (une ligne `Up` en conteneur, rien sinon) : **exactement l'un des deux**. La bascule hote → conteneur d'un site existant est une fiche d'[`UPGRADES.md`](UPGRADES.md).
 
 ### 4.7 — Verifier l'acces HTTPS
 
@@ -688,7 +703,7 @@ sudo systemctl status spark-compose.service
 sudo -u spark docker compose -f /opt/spark/infra/compose.yml logs --since 5m cloudflared n8n
 ```
 
-> **Avant l'etape 4** (test de reboot fait sur une stack sans tunnel, par exemple sur un serveur de recette) : 4 conteneurs seulement (pas de `cloudflared`, le profil n'est pas actif), **rien** sous `=== Tunnel (connecteur) ===` (connexion refusee sur le port 2000, `curl` n'ecrit rien) ni sous `=== Tunnel HTTPS ===` (le domaine ne pointe nulle part) : **normal**. Tout le reste (`active` et `compose: OK`, les deux timers `active`, 4 conteneurs `Up (healthy)`, sondes `-n8n` et `-db` `OK`) doit etre la. Site en **variante hote** (unit `spark-cloudflared.service`) : ajouter `systemctl is-active spark-cloudflared.service` au premier bloc, attendu `active`.
+> **Avant l'etape 4** (test de reboot fait sur une stack sans tunnel, par exemple sur un serveur de recette) : 4 conteneurs seulement (pas de `cloudflared`, le profil n'est pas actif), **rien** sous `=== Tunnel (connecteur) ===` (connexion refusee sur le port 2000, `curl` n'ecrit rien) ni sous `=== Tunnel HTTPS ===` (le domaine ne pointe nulle part) : **normal**. Tout le reste (`active` et `compose: OK`, les deux timers `active`, 4 conteneurs `Up (healthy)`, sondes `-n8n` et `-db` `OK`) doit etre la. Site en **variante hote** (unit `spark-cloudflared.service`) : ajouter `systemctl is-active spark-cloudflared.service` au premier bloc, attendu `active`, et aucun `spark-cloudflared-1` sous `=== Containers ===` (un seul connecteur, encart de l'etape 4.6).
 
 ---
 
@@ -783,7 +798,13 @@ Lire le diff : les seules differences attendues sont celles que le site a faites
 
 **Symptome** : `docker compose logs cloudflared` montre `Tunnel credentials file '/etc/cloudflared/<UUID>.json' doesn't exist or is not a file`, `permission denied`, ou `yaml: unmarshal errors`.
 **Causes** : `SPARK_TUNNEL_DIR` ne pointe pas sur le repertoire de `cloudflared tunnel create` ; `SPARK_TUNNEL_ID` ne correspond pas au `.json` present ; `SPARK_UID`/`SPARK_GID` ne sont pas ceux du proprietaire du repertoire (fichiers en `600`) ; `config.yml` edite a la main.
-**Solution** : `~/infra/scripts/tunnel-config.sh --check` (il nomme ce qui manque), corriger le `.env`, relancer `tunnel-config.sh`, puis `docker compose up -d`. Sans compte Cloudflare ni tunnel cree (serveur de recette), laisser `COMPOSE_PROFILES` vide : le service ne demarre pas et le reste de la stack n'en depend pas.
+**Solution** : `~/infra/scripts/tunnel-config.sh --check` (il nomme ce qui manque), corriger le `.env`, relancer `tunnel-config.sh`, puis `docker compose up -d`. Un journal `open /etc/cloudflared/config.yml: no such file or directory` = profil pose avant `tunnel-config.sh` (etape 4.4) : generer la config, `up -d`. Sans compte Cloudflare ni tunnel cree (serveur de recette), laisser `COMPOSE_PROFILES` vide : en premiere installation le conteneur n'est pas cree et le reste de la stack n'en depend pas ; mais si le conteneur a deja ete cree une fois, vider le profil ne le retire pas (il survit au `reload` et au reboot) : `docker compose --profile tunnel stop cloudflared && docker compose --profile tunnel rm -f cloudflared` (encart de l'etape 4.6).
+
+### Deux connecteurs cloudflared tournent (conteneur et unit hote)
+
+**Symptome** : `systemctl is-active spark-cloudflared.service` affiche `active` **et** `docker compose --profile tunnel ps cloudflared` montre une ligne `Up` ; les journaux des deux montrent des connexions qui se font et se defont.
+**Cause** : variante hote activee sans avoir retire le conteneur du profil `tunnel`, ou profil remis sans arreter l'unit. L'unit du kit refuse de demarrer si le conteneur tourne (`ExecStartPre`), pas l'inverse.
+**Solution** : choisir, puis retirer l'autre : conteneur → `sudo systemctl disable --now spark-cloudflared.service` ; hote → `docker compose --profile tunnel stop cloudflared && docker compose --profile tunnel rm -f cloudflared` et `COMPOSE_PROFILES=` dans le `.env`.
 
 ### UFW semble ne pas bloquer Docker
 
@@ -792,7 +813,7 @@ Lire le diff : les seules differences attendues sont celles que le site a faites
 
 ### Verifier le kit lui-meme
 
-Sur une machine avec Docker, `~/spark-kit/deploy/scripts/selftest-install.sh --up` rejoue les copies de l'etape 2 dans un repertoire temporaire, valide le compose et le Caddyfile, demarre la stack sous un projet separe (`spark-selftest`, port 18090) et la detruit. Utile avant d'appliquer une mise a jour du kit a un site.
+Sur une machine avec Docker, `~/spark-kit/deploy/scripts/selftest-install.sh --up` rejoue les copies de l'etape 2 dans un repertoire temporaire, valide le compose et le Caddyfile, passe les scripts a `shellcheck` (installe a l'etape 1.4 ; sans lui, une ligne `INFO  shellcheck absent : non joue` et une ligne `OK` de moins), demarre la stack sous un projet separe (`spark-selftest`, port 18090) et la detruit. Attendu : `== Resultat : 0 echec(s)` et code 0 ; une ligne `FAIL` nomme ce qui ne va pas. Utile avant d'appliquer une mise a jour du kit a un site.
 
 ---
 
