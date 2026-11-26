@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- deploy/macos/launchd/com.spark.cloudflared.plist : VARIANTE « cloudflared sur l'hote ».
+     Par defaut, le tunnel tourne dans le compose (profil tunnel, COMPOSE_PROFILES=tunnel) et ce
+     fichier ne sert pas. Si un site prefere le binaire Homebrew : config ecrite par
+     infra/scripts/tunnel-config.sh --host (config-spark.yml), puis
+       sed "s|__HOME__|$HOME|g" deploy/macos/launchd/com.spark.cloudflared.plist > ~/Library/LaunchAgents/com.spark.cloudflared.plist
+     Un seul tunnel a la fois : ne jamais charger cet agent avec le profil tunnel actif. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.spark.cloudflared</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/cloudflared</string>
+        <string>tunnel</string>
+        <string>--no-autoupdate</string>
+        <string>--config</string>
+        <string>__HOME__/.cloudflared/config-spark.yml</string>
+        <string>run</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__HOME__/spark/infra/logs/cloudflared.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/spark/infra/logs/cloudflared.err</string>
+</dict>
+</plist>

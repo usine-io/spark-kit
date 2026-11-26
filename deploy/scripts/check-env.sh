@@ -3,7 +3,8 @@
 #
 # Usage : check-env.sh [--env chemin/.env] [VAR ...]
 #   Sans VAR : les variables que le site doit renseigner avant `docker compose up`
-#   (SPARK_PREFIX, SPARK_DOMAIN et les 5 secrets d'infrastructure).
+#   (SPARK_PREFIX, SPARK_DOMAIN, les 5 secrets d'infrastructure, le jeton du sidecar runner et
+#   SPARK_UID/SPARK_GID du conteneur cloudflared ; init-env.sh les pose tous).
 #   --env : fichier a lire (defaut : infra/.env, infra/ etant le parent du repertoire du script,
 #   ou SPARK_INFRA_DIR).
 #
@@ -24,7 +25,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
 
-DEFAULT_VARS="SPARK_PREFIX SPARK_DOMAIN POSTGRES_ROOT_PASSWORD N8N_DB_PASSWORD NOCODB_DB_PASSWORD N8N_ENCRYPTION_KEY NC_AUTH_JWT_SECRET"
+DEFAULT_VARS="SPARK_PREFIX SPARK_DOMAIN POSTGRES_ROOT_PASSWORD N8N_DB_PASSWORD NOCODB_DB_PASSWORD N8N_ENCRYPTION_KEY NC_AUTH_JWT_SECRET N8N_RUNNERS_AUTH_TOKEN SPARK_UID SPARK_GID"
 env_file=""
 vars=""
 while [ $# -gt 0 ]; do

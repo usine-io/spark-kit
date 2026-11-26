@@ -2,39 +2,108 @@
 # Copie dans infra/config/caddy/ par `cp -R deploy/config infra/` ; le compose monte le
 # repertoire infra/config/caddy sur /etc/caddy.
 # Validation avant tout reload : docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile
+# Format `caddy fmt` (tabulations) : docker compose exec caddy caddy fmt --diff /etc/caddy/Caddyfile
+#
+# Ce fichier porte TOUT ce qu'un site doit servir par defaut : en-tetes de securite (SECURITY.md
+# §2.2, snippet `securite`, source unique : rien a poser sur le site), journal d'acces JSON, page de
+# maintenance (snippet `maintenance`), attrape-tout 404. Le site ne le modifie pas : ses vhosts
+# propres vont dans sites.d/*.caddy, ses en-tetes supplementaires aussi (import des snippets).
 {
 	auto_https off
 }
 
+# Page de maintenance : active tant que le fichier /etc/caddy/MAINTENANCE existe, c'est-a-dire
+# infra/config/caddy/MAINTENANCE (repertoire monte). `touch` + `caddy reload` = 503 sur tous les
+# vhosts, webhooks compris ; `rm` + `caddy reload` = retour. Sert pendant une montee de version
+# (UPGRADES.md) : rien n'ecrit dans n8n pendant qu'on sauvegarde ou qu'on restaure.
+# /healthz/readiness reste servi : les sondes (healthcheck compose, fiches d'UPGRADES.md) voient
+# l'etat reel de n8n pendant la maintenance.
+(maintenance) {
+	@maintenance {
+		file {
+			root /etc/caddy
+			try_files MAINTENANCE
+		}
+		not path /healthz/readiness
+	}
+	handle @maintenance {
+		header Retry-After 300
+		respond "Maintenance en cours, reessayez dans quelques minutes." 503
+	}
+}
+
+# En-tetes de securite (valeurs de reference : SECURITY.md §2.2) et journal d'acces.
+# HSTS sans `preload` : il engage tout le domaine de facon quasi irreversible.
+# Les suppressions (-X-Powered-By, -Server) different le bloc entier : les valeurs ecrasent donc
+# celles de l'application derriere (NocoDB envoie X-Powered-By: Express, par exemple).
+(securite) {
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+		-X-Powered-By
+		-Server
+	}
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 50mb
+			roll_keep 10
+		}
+		format json
+	}
+}
+
 # `header_up X-Forwarded-Proto https` est obligatoire : Caddy recoit du HTTP depuis
 # cloudflared, mais n8n doit croire qu'il est en HTTPS (sinon il refuse les cookies securises).
-
-http://{$SPARK_PREFIX}-n8n.{$SPARK_DOMAIN} {
+(proxy_n8n) {
 	reverse_proxy n8n:5678 {
 		header_up X-Forwarded-Proto https
 	}
 }
 
+http://{$SPARK_PREFIX}-n8n.{$SPARK_DOMAIN} {
+	import maintenance
+	import securite
+	# `>` : pose apres la reponse de n8n, qui envoie son propre X-Frame-Options (sinon deux valeurs).
+	header >X-Frame-Options "DENY"
+	import proxy_n8n
+}
+
 http://{$SPARK_PREFIX}-app.{$SPARK_DOMAIN} {
+	import maintenance
+	import securite
+	header >X-Frame-Options "SAMEORIGIN"
 	handle /apps/* {
 		root * /srv
 		file_server
 	}
 	handle {
-		reverse_proxy n8n:5678 {
-			header_up X-Forwarded-Proto https
-		}
+		import proxy_n8n
 	}
 }
 
 http://{$SPARK_PREFIX}-db.{$SPARK_DOMAIN} {
+	import maintenance
+	import securite
+	header >X-Frame-Options "DENY"
+	# CORS (SECURITY.md §2.3) : NocoDB repond `Access-Control-Allow-Origin: *` ; seul le front du
+	# site (-app) peut l'appeler depuis un navigateur. `>` = ecrire apres la reponse de NocoDB.
+	header >Access-Control-Allow-Origin "https://{$SPARK_PREFIX}-app.{$SPARK_DOMAIN}"
+	header >Vary "Origin"
 	reverse_proxy nocodb:8080 {
 		header_up X-Forwarded-Proto https
 	}
 }
 
-# Vhosts additionnels propres au site : un fichier *.caddy par vhost dans sites.d/.
-# Le repertoire existe toujours (fichier .keep) : un import sans correspondance est accepte, avec un
-# avertissement « No files matching import glob pattern » au demarrage et au validate tant qu'aucun
-# fichier .caddy n'est pose (attendu, sans gravite).
+# Vhosts additionnels propres au site : un fichier *.caddy par vhost dans sites.d/, qui importe
+# `maintenance` et `securite` comme ci-dessus. Le repertoire existe toujours (fichier .keep) : un
+# import sans correspondance est accepte, avec un avertissement « No files matching import glob
+# pattern » au demarrage et au validate tant qu'aucun fichier .caddy n'est pose (attendu, sans gravite).
 import /etc/caddy/sites.d/*.caddy
+
+# Host inconnu : 404 explicite. Sans ce bloc, Caddy repondait 200 avec un corps vide a tout Host
+# qu'il ne connait pas, et les sondes mentaient (vecu : de nombreux faux rouges).
+http:// {
+	respond "not found" 404
+}
