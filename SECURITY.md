@@ -58,12 +58,15 @@ header {
 	Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
 	-X-Powered-By
 	-Server
+	-Via
 }
 ```
 
+`-Via` retire le `Via: 1.1 Caddy` que `reverse_proxy` ajoute a chaque reponse proxifiee : meme empreinte que `Server`, meme traitement.
+
 `X-Frame-Options` est pose par vhost, hors du snippet : `DENY` sur `-n8n` et `-db` (jamais dans une iframe), `SAMEORIGIN` sur `-app` (les apps du site peuvent s'encadrer entre elles). Il est ecrit avec le prefixe `>` (apres la reponse de l'application) : n8n envoie son propre `X-Frame-Options`, sans `>` le navigateur recevait deux valeurs.
 
-**Les reponses d'erreur aussi.** Caddy n'applique pas un bloc `header` differe (toute suppression `-X` le differe) a une reponse d'erreur : un `404` de `file_server` (`-app`, `/apps/<absent>`) ou un `502` sans amont sortait avec `Server: Caddy` et sans ces en-tetes. Le snippet `(securite)` les reimporte donc dans un `handle_errors` (corps `<code> <libelle>`), et l'attrape-tout `404` des `Host` inconnus importe les memes en-tetes : **aucune reponse du kit, erreur comprise, ne porte `Server`**. `selftest-install.sh --up` le verifie sur le `404` d'un `Host` inconnu et sur un `404` de `file_server`.
+**Les reponses d'erreur aussi.** Caddy n'applique pas un bloc `header` differe (toute suppression `-X` le differe) a une reponse d'erreur : un `404` de `file_server` (`-app`, `/apps/<absent>`) ou un `502` sans amont sortait avec `Server: Caddy` et sans ces en-tetes. Le snippet `(securite)` importe donc dans un `handle_errors` le snippet `(erreurs)` : les memes en-tetes, **plus `X-Frame-Options: DENY`** (le `>X-Frame-Options` du vhost ne s'applique pas dans `handle_errors`, et une page d'erreur ne s'encadre jamais), corps `<code> <libelle>` ; l'attrape-tout `404` des `Host` inconnus porte les memes en-tetes et le meme `DENY` : **aucune reponse du kit, erreur comprise, ne porte `Server` ni `Via`, et toute erreur porte `X-Frame-Options: DENY`**. `selftest-install.sh --up` le verifie sur le `404` d'un `Host` inconnu et sur un `404` de `file_server`.
 
 Notes :
 - `auto_https off` (TLS gere par Cloudflare) implique que Caddy ecoute en HTTP — HSTS est neanmoins servi car Cloudflare en re-emet la version HTTPS au browser final.

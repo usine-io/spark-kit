@@ -36,7 +36,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --confirm) confirm=1; shift ;;
     --expect-migrations) [ $# -ge 2 ] || spark_die "--expect-migrations attend un nombre"; expect="$2"; shift 2 ;;
-    -h|--help) sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    -h|--help) sed -n '2,/^[^#]/{/^#/p;}' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) spark_die "option inconnue : $1" ;;
     *) stamp="$1"; shift ;;
   esac

@@ -48,7 +48,7 @@ for arg in "$@"; do
   case "$arg" in
     --up) up=1 ;;
     --keep) keep=1 ;;
-    -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    -h|--help) sed -n '2,/^[^#]/{/^#/p;}' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) printf 'option inconnue : %s\n' "$arg" >&2; exit 1 ;;
   esac
 done
@@ -353,9 +353,13 @@ if [ "$up" -eq 1 ]; then
     for want in 'strict-transport-security: max-age=63072000; includeSubDomains' 'x-content-type-options: nosniff' 'referrer-policy: strict-origin-when-cross-origin' 'permissions-policy: accelerometer=()'; do
       printf '%s' "$h" | grep -qi "^$want" || missing="$missing [$want]"
     done
-    if printf '%s' "$h" | grep -qiE '^(server|x-powered-by):'; then missing="$missing [Server/X-Powered-By present]"; fi
-    if [ -z "$missing" ]; then ok "$label : en-tetes de securite presents, Server et X-Powered-By absents"; else fail "$label : en-tetes manquants$missing"; fi
+    # Via : ajoute par reverse_proxy (`Via: 1.1 Caddy`), meme empreinte que Server ; le snippet le retire.
+    if printf '%s' "$h" | grep -qiE '^(server|x-powered-by|via):'; then missing="$missing [Server/X-Powered-By/Via present]"; fi
+    if [ -z "$missing" ]; then ok "$label : en-tetes de securite presents, Server, X-Powered-By et Via absents"; else fail "$label : en-tetes manquants$missing"; fi
   }
+  # xfo_of : valeur(s) de X-Frame-Options dans des en-tetes bruts, jointes par `+` s'il y en a plusieurs
+  # (chaque extraction se termine par `|| true` : un en-tete absent est un FAIL affiche, pas un arret du script)
+  xfo_of() { printf '%s' "$1" | { grep -i '^x-frame-options:' || true; } | tr -d '\r' | awk '{print $2}' | tr '\n' '+' | sed 's/+$//'; }
   for svc in n8n app db selftest; do
     check_headers "-$svc" "$(headers_of "$svc" /)"
   done
@@ -363,12 +367,14 @@ if [ "$up" -eq 1 ]; then
   check_headers "Host inconnu (404 attrape-tout)" "$h_unknown"
   app404="$(code_of app /apps/fichier-absent-selftest)"
   if [ "$app404" = "404" ]; then ok "-app /apps/<absent> -> 404 (file_server)"; else fail "-app /apps/<absent> -> $app404, attendu 404"; fi
-  check_headers "-app 404 de file_server (handle_errors)" "$(headers_of app /apps/fichier-absent-selftest)"
-  # (chaque extraction se termine par `|| true` : un en-tete absent est un FAIL affiche, pas un arret du script)
-  xfo_n8n="$(headers_of n8n / | { grep -i '^x-frame-options:' || true; } | tr -d '\r' | awk '{print $2}' | tr '\n' '+' | sed 's/+$//')"
-  # (sur -app, `/` passe par n8n ; X-Frame-Options est pose par vhost avec `>`, hors des erreurs)
-  xfo_app="$(headers_of app / | { grep -i '^x-frame-options:' || true; } | tr -d '\r' | awk '{print $2}' | tr '\n' '+' | sed 's/+$//')"
+  h_app404="$(headers_of app /apps/fichier-absent-selftest)"
+  check_headers "-app 404 de file_server (handle_errors)" "$h_app404"
+  # X-Frame-Options : par vhost sur les reponses normales (pose avec `>`, apres la reponse de l'amont :
+  # sur -app, `/` passe par n8n), DENY sur TOUTE reponse d'erreur (snippet erreurs, attrape-tout).
+  xfo_n8n="$(xfo_of "$(headers_of n8n /)")"; xfo_app="$(xfo_of "$(headers_of app /)")"
   if [ "$xfo_n8n" = "DENY" ] && [ "$xfo_app" = "SAMEORIGIN" ]; then ok "X-Frame-Options : DENY sur -n8n, SAMEORIGIN sur -app"; else fail "X-Frame-Options : -n8n « $xfo_n8n », -app « $xfo_app »"; fi
+  xfo_unknown="$(xfo_of "$h_unknown")"; xfo_app404="$(xfo_of "$h_app404")"
+  if [ "$xfo_unknown" = "DENY" ] && [ "$xfo_app404" = "DENY" ]; then ok "X-Frame-Options : DENY sur les deux reponses 404 (attrape-tout, file_server)"; else fail "X-Frame-Options sur les erreurs : attrape-tout « $xfo_unknown », file_server « $xfo_app404 » (attendu DENY)"; fi
   acao="$(headers_of db /api/v1/health | { grep -i '^access-control-allow-origin:' || true; } | tr -d '\r' | awk '{print $2}' | tr '\n' '+' | sed 's/+$//')"
   if [ "$acao" = "https://$PREFIX-app.$DOMAIN" ]; then ok "-db : Access-Control-Allow-Origin = https://$PREFIX-app.$DOMAIN"; else fail "-db : Access-Control-Allow-Origin « $acao »"; fi
   # Drapeau MAINTENANCE : 503 + Retry-After sur tous les vhosts (webhook compris), retour apres retrait.

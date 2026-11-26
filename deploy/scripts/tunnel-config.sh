@@ -31,7 +31,7 @@ for arg in "$@"; do
   case "$arg" in
     --host) mode=host ;;
     --check) check=1 ;;
-    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    -h|--help) sed -n '2,/^[^#]/{/^#/p;}' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) spark_die "option inconnue : $arg" ;;
   esac
 done

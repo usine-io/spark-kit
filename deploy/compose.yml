@@ -233,7 +233,9 @@ services:
   #   docker compose --profile tunnel stop cloudflared && docker compose --profile tunnel rm -f cloudflared
   # Variante « cloudflared sur l'hote » : deploy/linux/systemd/spark-cloudflared.service (Linux)
   # ou deploy/macos/launchd/com.spark.cloudflared.plist (macOS), fiche de bascule dans UPGRADES.md.
-  # Un seul connecteur a la fois (l'unit hote refuse de demarrer si ce conteneur tourne).
+  # Un seul connecteur a la fois : l'unit hote reste inactive (ExecCondition, scripts/
+  # cloudflared-host-guard.sh, cause dans journalctl -u spark-cloudflared.service) tant que le profil
+  # tunnel est pose dans .env ou que ce conteneur existe, meme arrete. Le compose, lui, ne verifie rien.
   cloudflared:
     image: cloudflare/cloudflared:2026.11.2@sha256:55c7e3e8d89d5e8d20b75a82f3602cbf98e06db406e73e282073cfdc5a9a3af6
     <<: *logging

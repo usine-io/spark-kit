@@ -23,9 +23,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Gabarit : a cote du repertoire scripts/ (deploy/env.example dans le kit, infra/env.example sur un site).
 TEMPLATE="${SPARK_ENV_TEMPLATE:-$SCRIPT_DIR/../env.example}"
 
-usage() {
-  sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-  exit 1
+usage() {  # [code de sortie] : 0 pour --help, 1 (defaut) sur une erreur d'appel
+  sed -n '2,/^[^#]/{/^#/p;}' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  exit "${1:-1}"
 }
 
 prefix="" domain="" port="18080" force=0 target="" sync=0
@@ -37,7 +37,7 @@ while [ $# -gt 0 ]; do
       case "$1" in --prefix) prefix="$2" ;; --domain) domain="$2" ;; --port) port="$2" ;; esac
       shift 2 ;;
     --force) force=1; shift ;;
-    -h|--help) usage ;;
+    -h|--help) usage 0 ;;
     -*) printf 'option inconnue : %s\n' "$1" >&2; usage ;;
     *) target="$1"; shift ;;
   esac

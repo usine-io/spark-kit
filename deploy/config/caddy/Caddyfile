@@ -44,10 +44,11 @@
 }
 
 # En-tetes de securite (valeurs de reference : SECURITY.md §2.2). HSTS sans `preload` : il engage
-# tout le domaine de facon quasi irreversible. Les suppressions (-X-Powered-By, -Server) different le
-# bloc entier : les valeurs ecrasent donc celles de l'application derriere (NocoDB envoie
-# X-Powered-By: Express, par exemple). Un bloc differe n'est PAS applique a une reponse d'erreur
-# (404 de file_server, 502 sans amont) : `securite` l'importe une seconde fois dans handle_errors.
+# tout le domaine de facon quasi irreversible. Les suppressions (-X-Powered-By, -Server, -Via)
+# different le bloc entier : les valeurs ecrasent donc celles de l'application derriere (NocoDB
+# envoie X-Powered-By: Express, par exemple). `-Via` retire le `Via: 1.1 Caddy` que reverse_proxy
+# ajoute a chaque reponse (meme empreinte que `Server`). Un bloc differe n'est PAS applique a une
+# reponse d'erreur (404 de file_server, 502 sans amont) : `erreurs` l'importe une seconde fois.
 (entetes) {
 	header {
 		Strict-Transport-Security "max-age=63072000; includeSubDomains"
@@ -56,11 +57,21 @@
 		Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
 		-X-Powered-By
 		-Server
+		-Via
 	}
 }
 
-# Ce qu'un vhost importe : en-tetes, journal d'acces JSON, et les memes en-tetes sur les erreurs
-# (404 d'un fichier absent, 502 quand l'amont ne repond pas), sans `Server: Caddy`.
+# Toute reponse d'erreur du kit : les memes en-tetes, plus X-Frame-Options DENY (une page d'erreur
+# ne s'encadre jamais ; le X-Frame-Options du vhost, pose avec `>` apres la reponse de l'amont, ne
+# s'applique pas dans handle_errors). Corps `<code> <libelle>`, sans `Server: Caddy`.
+(erreurs) {
+	import entetes
+	header X-Frame-Options "DENY"
+	respond "{err.status_code} {err.status_text}" {err.status_code}
+}
+
+# Ce qu'un vhost importe : en-tetes, journal d'acces JSON, et les en-tetes d'erreur sur les erreurs
+# (404 d'un fichier absent, 502 quand l'amont ne repond pas).
 (securite) {
 	import entetes
 	log {
@@ -71,8 +82,7 @@
 		format json
 	}
 	handle_errors {
-		import entetes
-		respond "{err.status_code} {err.status_text}" {err.status_code}
+		import erreurs
 	}
 }
 
@@ -126,8 +136,10 @@ import /etc/caddy/sites.d/*.caddy
 
 # Host inconnu : 404 explicite. Sans ce bloc, Caddy repondait 200 avec un corps vide a tout Host
 # qu'il ne connait pas, et les sondes mentaient (vecu : de nombreux faux rouges). Memes en-tetes
-# que les vhosts (donc sans `Server: Caddy`) : SECURITY.md §2.2 vaut pour toute reponse du kit.
+# que les erreurs des vhosts (X-Frame-Options DENY compris, sans `Server: Caddy`) : SECURITY.md
+# §2.2 vaut pour toute reponse du kit.
 http:// {
 	import entetes
+	header X-Frame-Options "DENY"
 	respond "not found" 404
 }

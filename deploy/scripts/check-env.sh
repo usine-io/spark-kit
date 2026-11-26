@@ -18,7 +18,9 @@
 # SPARK_TUNNEL_DIR et <SPARK_TUNNEL_DIR>/config.yml (ecrit par tunnel-config.sh ; sans lui le
 # conteneur boucle en redemarrage) ; `runners` exige COMPOSE_FILE=compose.yml:compose.runners.yml
 # (sinon le sidecar tourne pour rien, n8n reste en mode interne) et reciproquement (l'override sans
-# le profil mettrait n8n en mode externe sans sidecar : les nodes Code echoueraient).
+# le profil mettrait n8n en mode externe sans sidecar : les nodes Code echoueraient). Sans `tunnel`
+# dans la liste, une ligne `INFO ...` rappelle qu'un conteneur cloudflared deja cree n'est pas retire
+# par un profil vide (`docker compose --profile tunnel ps cloudflared` le montre ; stop + rm -f).
 # Le script NE REGARDE QUE LE FICHIER : il est charge dans un environnement vide (`env -i`), une
 # variable exportee dans le shell appelant ne compte pas (ligne absente du fichier = FAIL, meme si
 # `SPARK_PREFIX` est pose dans le shell). Le fichier est source comme du shell : une valeur avec `$`,
@@ -37,7 +39,7 @@ vars=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --env) [ $# -ge 2 ] || spark_die "--env attend un chemin"; env_file="$2"; shift 2 ;;
-    -h|--help) sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    -h|--help) sed -n '2,/^[^#]/{/^#/p;}' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) spark_die "option inconnue : $1" ;;
     *) case "$1" in *[!A-Za-z0-9_]*) spark_die "nom de variable invalide : $1" ;; esac
        vars="$vars $1"; shift ;;
@@ -77,6 +79,10 @@ env -i HOME="${HOME:-/}" PATH="$PATH" LC_ALL=C bash -c '
         elif [ ! -f "${SPARK_TUNNEL_DIR}/config.yml" ]; then
           pb="profil tunnel sans ${SPARK_TUNNEL_DIR}/config.yml : lancer tunnel-config.sh AVANT de poser le profil (sinon cloudflared boucle en redemarrage)"
         fi ;;
+      *)
+        # Ce script ne lit que le fichier : il ne peut pas voir un conteneur. Il rappelle donc que un
+        # conteneur cloudflared deja cree survit a un profil vide (restart: always, relance au boot).
+        printf "INFO COMPOSE_PROFILES sans tunnel : un conteneur cloudflared deja cree n est pas retire par un profil vide (verifier : docker compose --profile tunnel ps cloudflared ; retrait : --profile tunnel stop cloudflared && --profile tunnel rm -f cloudflared)\n" ;;
     esac
     case "$profiles:$files" in
       *,runners,*:*compose.runners.yml*) ;;

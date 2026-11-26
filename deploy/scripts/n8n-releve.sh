@@ -31,7 +31,7 @@ while [ $# -gt 0 ]; do
     --out) [ $# -ge 2 ] || spark_die "--out attend un chemin"; out="$2"; shift 2 ;;
     --compare) [ $# -ge 3 ] || spark_die "--compare attend deux fichiers"; mode=compare; before="$2"; after="$3"; shift 3 ;;
     --rollback) rollback=1; shift ;;
-    -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    -h|--help) sed -n '2,/^[^#]/{/^#/p;}' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) spark_die "option inconnue : $1" ;;
   esac
 done

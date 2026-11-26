@@ -224,7 +224,7 @@ $SPARK_HOME/                          ← dossier de travail sur le serveur
 │       ├── config/caddy/             Caddyfile (snippets securite, maintenance, 404) + sites.d/
 │       ├── config/postgres/          init-db.sh
 │       ├── scripts/                  init-env, check-env, backup, restore-test, restore-n8n, n8n-releve,
-│       │                             tunnel-config, pin-digests, selftest-install, mcp-n8n
+│       │                             tunnel-config, cloudflared-host-guard, pin-digests, selftest-install, mcp-n8n
 │       ├── linux/systemd/            units et timers (compose, backup, restore-test ; cloudflared en variante hote)
 │       └── macos/launchd/            plists (Colima ; cloudflared en variante hote)
 ├── templates/                        ← clone de spark-kit/templates (read-only)
