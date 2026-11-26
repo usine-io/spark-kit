@@ -48,7 +48,7 @@ Couverture minimum :
 
 ### 2.2 Headers de securite cote Caddy
 
-Sur **chaque vhost** du Caddyfile du site (`infra/config/caddy/Caddyfile`, copie de `deploy/config/caddy/Caddyfile` du kit), le block `header { ... }` suivant est obligatoire. Sans `preload` sur HSTS : il engage tout le domaine de facon quasi irreversible. Valider (`caddy validate`) avant de recharger :
+Sur **chaque vhost** du Caddyfile du site (`infra/config/caddy/Caddyfile`, copie de `deploy/config/caddy/Caddyfile` du kit), le block `header { ... }` suivant est obligatoire. **Le Caddyfile du kit ne le porte pas encore** : c'est le site qui l'ajoute (guide Linux, etape 5.3), ce qui rend son Caddyfile different de celui du kit (ecart attendu dans `diff -ru`). Un lot suivant du kit l'apportera sous forme de snippet `(securite)` importe par chaque vhost ; le site n'aura alors plus rien a poser. Sans `preload` sur HSTS : il engage tout le domaine de facon quasi irreversible. Valider (`caddy validate`) avant de recharger :
 
 ```caddy
 header {

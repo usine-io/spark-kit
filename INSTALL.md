@@ -166,7 +166,8 @@ Ce que ces copies posent :
 | `config/caddy/Caddyfile` | Reverse proxy interne (3 vhosts), pas de TLS (Cloudflare s'en charge) |
 | `config/caddy/sites.d/` | Vhosts additionnels du site, un fichier `.caddy` par vhost (vide au depart) |
 | `scripts/init-env.sh` | Cree le `.env` avec des secrets URL-safe |
-| `scripts/backup.sh`, `scripts/restore-test.sh` | Sauvegarde et test de restauration (voir « Aller plus loin ») |
+| `scripts/check-env.sh` | Verifie, par nom et sans afficher de valeur, que les variables obligatoires du `.env` sont renseignees |
+| `scripts/backup.sh`, `scripts/restore-test.sh` | Sauvegarde et test de restauration (voir « Aller plus loin »), un seul exemplaire de chacun a la fois (verrou) |
 | `scripts/pin-digests.sh` | Releve ou controle les digests des images (compose et `mcp-n8n.sh`) |
 | `scripts/mcp-n8n.sh` | Lance le serveur MCP n8n a la demande pour Claude Code (image figee par tag + digest), voir [CLAUDE-CODE.md](CLAUDE-CODE.md) |
 | `scripts/lib.sh` | Fonctions communes (sourcees par les autres scripts) |
@@ -194,12 +195,10 @@ Verifier la configuration, sans afficher les secrets :
 ```bash
 cd ~/spark/infra
 out=$(docker compose config -q 2>&1); [ -z "$out" ] && echo "compose: OK" || { echo "$out"; false; }
-for v in SPARK_PREFIX SPARK_DOMAIN POSTGRES_ROOT_PASSWORD N8N_DB_PASSWORD NOCODB_DB_PASSWORD N8N_ENCRYPTION_KEY NC_AUTH_JWT_SECRET; do
-  grep -q "^$v=.." .env && echo "OK   $v" || { echo "FAIL $v vide"; false; }
-done
+~/spark/infra/scripts/check-env.sh
 ```
 
-`compose: OK` ne s'affiche que si `docker compose config` n'a **rien** ecrit : un avertissement `variable is not set` (code de retour 0 pourtant) est affiche a la place et la commande echoue. Compose ne dit rien d'une variable **presente mais vide** (`NOM=`) : la boucle verifie une a une celles qui doivent avoir une valeur.
+`compose: OK` ne s'affiche que si `docker compose config` n'a **rien** ecrit : un avertissement `variable is not set` (code de retour 0 pourtant) est affiche a la place et la commande echoue. Compose ne dit rien d'une variable **presente mais vide** (`NOM=`) : `check-env.sh` verifie une a une celles qui doivent avoir une valeur (`SPARK_PREFIX`, `SPARK_DOMAIN` et les 5 secrets), sur la valeur resolue sans guillemets ni espaces, et affiche `OK   NOM` ou `FAIL NOM absent ou vide` (code 1), jamais la valeur.
 
 > `header_up X-Forwarded-Proto https` dans le Caddyfile est obligatoire : Caddy recoit du HTTP depuis cloudflared, mais les apps doivent croire qu'elles sont en HTTPS (sinon n8n refuse les cookies securises).
 
@@ -503,10 +502,13 @@ cd ~/spark/spark-kit && git pull --ff-only
 diff -u ~/spark/infra/compose.yml ~/spark/spark-kit/deploy/compose.yml
 diff -u ~/spark/infra/env.example ~/spark/spark-kit/deploy/env.example
 diff -ru ~/spark/infra/config ~/spark/spark-kit/deploy/config
+diff -ru ~/spark/infra/scripts ~/spark/spark-kit/deploy/scripts
 ~/spark/infra/scripts/pin-digests.sh --check ~/spark/infra/compose.yml
 ```
 
-Les seules differences attendues sont celles que le site a faites lui-meme (en-tetes de securite, fichiers `sites.d/`). Un changement de tag d'image est une **montee de version** : sauvegarde + test de restauration d'abord, puis `cp` du fichier concerne, `docker compose up -d`, verification. Pour verifier le kit lui-meme avant de l'appliquer : `~/spark/spark-kit/deploy/scripts/selftest-install.sh --up` (projet separe `spark-selftest`, port 18090, detruit a la fin).
+Les seules differences attendues sont celles que le site a faites lui-meme (en-tetes de securite, fichiers `sites.d/`) ; les scripts ne se modifient pas sur le site : `diff -ru` sur `scripts/` doit etre vide apres recopie (`cp ~/spark/spark-kit/deploy/scripts/*.sh ~/spark/infra/scripts/ && chmod +x ~/spark/infra/scripts/*.sh`). Un changement de tag d'image est une **montee de version** : sauvegarde + test de restauration d'abord, puis `cp` du fichier concerne, `docker compose up -d`, verification. Pour verifier le kit lui-meme avant de l'appliquer : `~/spark/spark-kit/deploy/scripts/selftest-install.sh --up` (projet separe `spark-selftest`, port 18090, detruit a la fin).
+
+> **Site installe avec une version anterieure du guide** (fichiers recopies a la main) : l'arborescence etait `~/spark/infra/docker-compose.yml`, `~/spark/infra/config/Caddyfile` (fichier monte seul), NocoDB en `:latest` ; ni `env.example`, ni `scripts/`, ni `sites.d/`. Transition, stack en marche, apres un `docker compose exec -T postgres pg_dumpall -U postgres | gzip > ~/pg_dumpall-avant-transition.sql.gz` : faire les copies de l'etape 2 (chemins nouveaux ; seul `config/postgres/init-db.sh` est remplace, sans effet sur un volume existant) ; reporter dans `config/caddy/Caddyfile` et `compose.yml` ce que le site avait ajoute ; lire `diff -u docker-compose.yml compose.yml` (attendu : digests, `postgres:16-alpine` → `16.16-alpine`, `caddy:2-alpine` → `2.11.9-alpine`, `nocodb:latest` → `2026.04.5`, `mem_limit`, montage du repertoire `./config/caddy`, commentaires — tout autre ecart est une anomalie ; si le site servait un NocoDB plus recent que `2026.04.5`, **ne pas** redescendre : garder son tag et le figer avec `pin-digests.sh`) ; `docker compose -f compose.yml up -d` (memes volumes, meme projet `spark` : aucune donnee ne bouge), sondes de l'etape 3, puis ranger `docker-compose.yml` et l'ancien `config/Caddyfile` hors de `infra/`.
 
 ---
 

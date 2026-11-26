@@ -192,7 +192,8 @@ Ce que ces copies posent :
 | `config/caddy/Caddyfile` | Reverse proxy interne (3 vhosts), pas de TLS (Cloudflare s'en charge) |
 | `config/caddy/sites.d/` | Vhosts additionnels du site, un fichier `.caddy` par vhost (vide au depart) |
 | `scripts/init-env.sh` | Cree le `.env` avec des secrets URL-safe |
-| `scripts/backup.sh`, `scripts/restore-test.sh` | Sauvegarde et test de restauration (etape 3.b) |
+| `scripts/check-env.sh` | Verifie, par nom et sans afficher de valeur, que les variables obligatoires du `.env` sont renseignees (etapes 2.3 et 7) |
+| `scripts/backup.sh`, `scripts/restore-test.sh` | Sauvegarde et test de restauration (etape 3.b), un seul exemplaire de chacun a la fois (verrou) |
 | `scripts/pin-digests.sh` | Releve ou controle les digests des images (compose et `mcp-n8n.sh`) |
 | `scripts/mcp-n8n.sh` | Lance le serveur MCP n8n a la demande pour Claude Code (image figee par tag + digest), voir [CLAUDE-CODE.md](CLAUDE-CODE.md) |
 | `scripts/lib.sh` | Fonctions communes (sourcees par les autres scripts) |
@@ -223,12 +224,10 @@ Verifier la configuration, sans afficher les secrets :
 ```bash
 cd ~/infra
 out=$(docker compose config -q 2>&1); [ -z "$out" ] && echo "compose: OK" || { echo "$out"; false; }
-for v in SPARK_PREFIX SPARK_DOMAIN POSTGRES_ROOT_PASSWORD N8N_DB_PASSWORD NOCODB_DB_PASSWORD N8N_ENCRYPTION_KEY NC_AUTH_JWT_SECRET; do
-  grep -q "^$v=.." .env && echo "OK   $v" || { echo "FAIL $v vide"; false; }
-done
+~/infra/scripts/check-env.sh
 ```
 
-`compose: OK` ne s'affiche que si `docker compose config` n'a **rien** ecrit : un avertissement `variable is not set` (code de retour 0 pourtant) est affiche a la place et la commande echoue. Compose ne dit rien d'une variable **presente mais vide** (`NOM=`) : la boucle verifie une a une celles qui doivent avoir une valeur (site et 5 secrets).
+`compose: OK` ne s'affiche que si `docker compose config` n'a **rien** ecrit : un avertissement `variable is not set` (code de retour 0 pourtant) est affiche a la place et la commande echoue. Compose ne dit rien d'une variable **presente mais vide** (`NOM=`) : `check-env.sh` verifie une a une celles qui doivent avoir une valeur (`SPARK_PREFIX`, `SPARK_DOMAIN` et les 5 secrets) et affiche `OK   NOM` ou `FAIL NOM absent ou vide`, jamais la valeur. Il juge la valeur telle que le shell la **resout**, debarrassee des guillemets et des espaces : `NOM=`, `NOM=''`, `NOM="  "` ou une ligne absente sont vides ; une valeur d'un seul caractere est renseignee. Code de retour 1 au premier `FAIL`.
 
 ### 2.4 — Points cles du compose
 
@@ -294,10 +293,13 @@ Puis, de retour dans le shell administrateur :
 sudo cp /opt/spark/spark-kit/deploy/linux/systemd/spark-compose.service \
   /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable spark-compose.service
+sudo systemctl enable --now spark-compose.service
+systemctl is-active spark-compose.service   # attendu : active
 ```
 
-> Le fichier `spark-compose.service` est fourni dans `deploy/linux/systemd/` **du kit** (`/opt/spark/spark-kit`). Il lance `docker compose up -d` au demarrage du serveur en tant qu'utilisateur `spark`, et refuse de demarrer si `~/infra/.env` ou `compose.yml` manque.
+> Le fichier `spark-compose.service` est fourni dans `deploy/linux/systemd/` **du kit** (`/opt/spark/spark-kit`). Il lance `docker compose up -d` au demarrage du serveur en tant qu'utilisateur `spark`, et refuse de demarrer si `~/infra/.env` ou `compose.yml` manque (le fichier absent est nomme dans `journalctl -u spark-compose.service`). `enable --now` l'active tout de suite : `up -d` est idempotent, la stack deja lancee n'est pas touchee. Avec un simple `enable`, le service resterait `inactive` jusqu'au prochain reboot et l'etape 7 afficherait `compose: FAIL`.
+
+> ⚠️ **`systemctl start`, jamais `restart`, pour appliquer un changement.** `start` rejoue `docker compose up -d` (idempotent : seuls les services dont la definition a change sont recrees). `restart` passe par `ExecStop` : sur une config complete c'est un `docker compose down` qui **coupe le site** le temps du redemarrage. Si `.env` ou `compose.yml` manque au moment du `restart`, l'unit saute volontairement le `down` (les conteneurs restent en place, le journal le dit : `docker compose down NON execute`), puis echoue au demarrage : une config cassee ne coupe pas le site, mais `systemctl status` est `failed` jusqu'a correction puis `systemctl start`.
 
 ---
 
@@ -339,10 +341,13 @@ ls -la ~/infra/backups/
 ```
 
 Attendu :
-- `backup.sh` ecrit `pg_dumpall-<date>.sql.gz`, un `vol-<volume>-<date>.tgz` par volume hors Postgres (`n8n_data`, `nocodb_data`, `caddy_data`, `caddy_config`), `secrets-<date>.tar.age`, et termine par `sauvegarde ... complete`.
+- `backup.sh` ecrit un **jeu** a un meme horodatage `<stamp>` : `pg_dumpall-<stamp>.sql.gz`, un `vol-<volume>-<stamp>.tgz` par volume hors Postgres (`n8n_data`, `nocodb_data`, `caddy_data`, `caddy_config`), `secrets-<stamp>.tar.age`, et termine par `sauvegarde ... complete`. La retention (`BACKUP_KEEP_DAYS`, 14 jours) supprime les jeux entiers, jamais un fichier isole.
 - `restore-test.sh` demarre un Postgres jetable avec la meme image, rejoue le dump, affiche `restauration rejouee : 1 erreur(s), toutes attendues` (le role `postgres` existe deja), les comptes de bases, de tables et de migrations n8n, puis compte les identifiants n8n dans la copie. **A ce stade il n'y en a aucun** (le premier acces n8n est l'etape 6) : le script affiche `AVERTISSEMENT : aucun identifiant n8n dans la base, dechiffrement non verifie`, puis `test de restauration OK`, et sort en code 0. Le controle de dechiffrement ne porte sur rien tant qu'un identifiant n'existe pas ; l'etape 6 en cree un et rend ce controle obligatoire.
-- Les deux ecrivent `backups/LAST_OK` et `backups/RESTORE_TEST_OK` (horodatage).
-- `backup.sh` refuse d'ecrire quoi que ce soit si `BACKUP_AGE_RECIPIENT` est vide (ou si `age` manque) : une sauvegarde sans ses secrets n'est pas une sauvegarde. Chaque fichier est produit en `.part` et renomme seulement quand tout est controle.
+- `backup.sh` ecrit `backups/LAST_OK` et `restore-test.sh` ecrit `backups/RESTORE_TEST_OK` (un horodatage chacun, uniquement en fin de succes : `cat ~/infra/backups/LAST_OK ~/infra/backups/RESTORE_TEST_OK`).
+- `backup.sh` refuse d'ecrire quoi que ce soit si `BACKUP_AGE_RECIPIENT` est vide ou n'est pas une cle `age1...` valide (ou si `age` manque) : une sauvegarde sans ses secrets n'est pas une sauvegarde. Chaque fichier est produit en `.part` et renomme seulement quand tout est controle, secrets et volumes d'abord, dump en dernier : le dump le plus recent (celui que `restore-test.sh` prend) a toujours son jeu complet.
+- Un seul `backup.sh` et un seul `restore-test.sh` a la fois : un deuxieme lancement pendant le premier sort en code 2 avec `deja en cours d'execution (verrou ...)`, sans rien toucher ni alerter.
+- `restore-test.sh` lit les images (tag + digest) dans `compose.yml` via `docker compose config` : il n'exige pas que la stack tourne.
+- Si `restore-test.sh` sort `base n8n vide` ou `relation "migrations" does not exist`, le dump a ete pris pendant que n8n creait encore ses tables (premier demarrage) : attendre la sonde `-n8n OK` de l'etape 3, relancer `backup.sh`, puis `restore-test.sh`.
 
 > **`RESTORE_TEST_REQUIRE_CREDENTIAL`** (dans `.env`, `0` par defaut). A `1`, une base sans identifiant n8n fait **echouer** le test de restauration (code 2, alerte) au lieu d'un avertissement. A activer en production une fois l'etape 6 faite : c'est ce qui garantit que la cle `N8N_ENCRYPTION_KEY` sauvegardee dechiffre bien ce qu'il y a en base. Pour l'essayer tout de suite : `RESTORE_TEST_REQUIRE_CREDENTIAL=1 ~/infra/scripts/restore-test.sh` doit sortir en erreur « aucun identifiant n8n dans la base ».
 
@@ -366,7 +371,8 @@ Sauvegarde toutes les 6 h, test de restauration chaque nuit. Les deux units sont
 > **Hors machine.** Ces sauvegardes sont locales. Copier `~/infra/backups/` vers un stockage distant
 > (`rclone copy` + suppression par age, jamais `sync` ; un second serveur chez le meme hebergeur n'est pas
 > un site distant). Les dumps contiennent des secrets : le distant est chiffre ou le dump le devient avant envoi.
-> En cas d'echec, les scripts appellent `SPARK_ALERT_WEBHOOK` (`.env`) s'il est renseigne.
+
+> **Alerte d'echec : `SPARK_ALERT_WEBHOOK`.** Quand `backup.sh` ou `restore-test.sh` echoue (code 2), il ecrit `ALERTE [hote] script: message — ERREUR: <derniere ligne ERREUR>` sur stderr (donc dans `journalctl -u spark-backup.service` / `-u spark-restore-test.service`) et, si `SPARK_ALERT_WEBHOOK` est renseigne, envoie le meme contenu en POST JSON (`{host, script, message, error, ts, status}`) a cette URL (webhook n8n d'un autre site, Slack, Teams, etc.). La ligne ERREUR nomme un fichier ou une variable, jamais une valeur. Le renseigner dans `~/infra/.env` (`SPARK_ALERT_WEBHOOK=https://...`) ; une variable deja posee dans l'environnement (`Environment=` dans l'unit, ligne de commande) **l'emporte** sur le `.env`, y compris sur une ligne vide `SPARK_ALERT_WEBHOOK=` — meme regle que `docker compose`. Pour verifier le circuit sans rien casser : `BACKUP_AGE_RECIPIENT=age1invalide ~/infra/scripts/backup.sh` doit sortir en code 2 avec `ERREUR: BACKUP_AGE_RECIPIENT invalide`, l'alerte en stderr, et n'ecrire aucune archive dans `backups/`.
 
 ---
 
@@ -634,8 +640,8 @@ sudo -u spark docker compose -f /opt/spark/infra/compose.yml ps \
 
 echo "=== Caddy → services (lu sous spark : .env est en 600) ==="
 sudo -u spark bash -c '
+  /opt/spark/infra/scripts/check-env.sh SPARK_PREFIX SPARK_DOMAIN >/dev/null || { echo "  FAIL .env non charge (SPARK_PREFIX/SPARK_DOMAIN absents ou vides)"; exit 1; }
   set -a; . /opt/spark/infra/.env; set +a
-  [ -n "$SPARK_PREFIX" ] && [ -n "$SPARK_DOMAIN" ] || { echo "  FAIL .env non charge (SPARK_PREFIX/SPARK_DOMAIN vides)"; exit 1; }
   probe() {
     body=$(curl -s -m 10 -H "Host: ${SPARK_PREFIX}-$1.${SPARK_DOMAIN}" \
       "http://127.0.0.1:${SPARK_HOST_HTTP_PORT:-18080}$2" 2>/dev/null || true)
@@ -651,12 +657,14 @@ sudo -u spark bash -c '
 '
 ```
 
-Tout doit afficher OK. Le bloc Caddy tourne sous `spark` parce que `.env` est en `600` : lance par l'administrateur, `. /opt/spark/infra/.env` echouerait en silence, les variables resteraient vides et la sonde interrogerait `Host: -n8n.` — d'ou le garde-fou sur `SPARK_PREFIX`/`SPARK_DOMAIN`. Si un service manque, verifier :
+Tout doit afficher OK. Le bloc Caddy tourne sous `spark` parce que `.env` est en `600` : lance par l'administrateur, `. /opt/spark/infra/.env` echouerait en silence, les variables resteraient vides et la sonde interrogerait `Host: -n8n.` — d'ou le garde-fou `check-env.sh SPARK_PREFIX SPARK_DOMAIN` (valeur resolue, sans guillemets ni espaces). Si un service manque, verifier :
 
 ```bash
 sudo systemctl status spark-compose.service
 sudo journalctl -u spark-cloudflared.service --since "5 min ago"
 ```
+
+> **Avant l'etape 4** (test de reboot fait sur une stack sans tunnel, par exemple sur un serveur de recette) : `cloudflared: FAIL` et une ligne `=== Tunnel HTTPS ===` vide sont **normaux**, le service `spark-cloudflared` n'existe pas encore et le domaine ne pointe nulle part. Tout le reste (`compose: OK`, les deux timers `active`, 4 conteneurs `Up`, sondes `-n8n` et `-db` `OK`) doit etre vert.
 
 ---
 
@@ -673,10 +681,18 @@ cd ~/spark-kit && git pull --ff-only
 diff -u ~/infra/compose.yml ~/spark-kit/deploy/compose.yml
 diff -u ~/infra/env.example ~/spark-kit/deploy/env.example
 diff -ru ~/infra/config ~/spark-kit/deploy/config
+diff -ru ~/infra/scripts ~/spark-kit/deploy/scripts
 ~/infra/scripts/pin-digests.sh --check ~/infra/compose.yml
 ```
 
-Lire le diff : les seules differences attendues sont celles que le site a faites lui-meme (en-tetes 5.3, CORS 5.4, fichiers `sites.d/`). Un changement de tag d'image est une **montee de version** : sauvegarde + test de restauration reussis et dates d'abord, puis `cp` du fichier concerne, `docker compose up -d`, verification. Jamais de `pull` sans l'avoir decide.
+Lire le diff : les seules differences attendues sont celles que le site a faites lui-meme (en-tetes 5.3, CORS 5.4, fichiers `sites.d/`) ; les scripts ne se modifient pas sur le site, `diff -ru ~/infra/scripts ~/spark-kit/deploy/scripts` doit etre vide apres recopie (`cp ~/spark-kit/deploy/scripts/*.sh ~/infra/scripts/ && chmod +x ~/infra/scripts/*.sh`). Un changement de tag d'image est une **montee de version** : sauvegarde + test de restauration reussis et dates d'abord, puis `cp` du fichier concerne, `docker compose up -d`, verification. Jamais de `pull` sans l'avoir decide. Les units systemd se recopient de la meme facon (`sudo cp .../deploy/linux/systemd/spark-*.{service,timer} /etc/systemd/system/ && sudo systemctl daemon-reload`), puis `sudo systemctl start spark-compose.service` — jamais `restart` (etape 3).
+
+> **Site installe avec une version anterieure du guide** (fichiers recopies a la main en heredoc) : l'arborescence etait `~/infra/docker-compose.yml`, `~/infra/config/Caddyfile` (fichier monte seul) et des images en tags flottants ; il n'y avait ni `env.example`, ni `scripts/`, ni `sites.d/`. Transition, stack en marche, apres une sauvegarde manuelle (`docker compose exec -T postgres pg_dumpall -U postgres | gzip > ~/pg_dumpall-avant-transition.sql.gz`) :
+> 1. faire les copies de l'etape 2.2 (`compose.yml`, `env.example`, `config/caddy/`, `scripts/` sont des chemins nouveaux ; seul `config/postgres/init-db.sh` est remplace par la version du kit, sans effet : il ne rejoue jamais sur un volume existant) ;
+> 2. reporter dans `~/infra/config/caddy/Caddyfile` ce que le site avait ajoute a l'ancien `config/Caddyfile` (en-tetes 5.3, CORS), puis `docker compose -f compose.yml exec caddy caddy validate --config /etc/caddy/Caddyfile` ; reporter dans `compose.yml` les ajouts du site a `docker-compose.yml` (CORS 5.4) ;
+> 3. lire `diff -u docker-compose.yml compose.yml` : seuls les digests, les mineures figees des tags flottants (`postgres:16-alpine` → `16.16-alpine`, `caddy:2-alpine` → `2.11.9-alpine`), le montage du repertoire `./config/caddy` et les commentaires doivent differer (voir `CHANGELOG.md`) ; un autre ecart est une anomalie a comprendre avant d'aller plus loin. Les volumes nommes sont les memes (`spark_postgres_data`, ...), le projet reste `spark` : aucune donnee ne bouge ;
+> 4. `docker compose -f compose.yml up -d` (Compose recree les conteneurs dont la definition a change, les volumes sont conserves), sondes de l'etape 3, puis ranger les anciens fichiers hors de `infra/` : `mv docker-compose.yml ~/docker-compose.yml.avant-transition && mv config/Caddyfile ~/Caddyfile.avant-transition` (le Caddyfile en service est desormais `config/caddy/Caddyfile`) ;
+> 5. etape 2.3 (`check-env.sh` sur le `.env` existant, qui garde ses secrets ; ajouter a la main les variables nouvelles de `env.example` : `BACKUP_*`, `SPARK_ALERT_WEBHOOK`, `RESTORE_TEST_REQUIRE_CREDENTIAL`), etape 3 (service systemd du kit, `start` pas `restart`) et etape 3.b (sauvegardes).
 
 ---
 
@@ -698,6 +714,11 @@ Lire le diff : les seules differences attendues sont celles que le site a faites
 **Symptome** : Postgres demarre sans creer les bases, ou Caddy refuse de demarrer (`/etc/caddy/Caddyfile is a directory`).
 **Cause** : un fichier reference par le compose (`config/postgres/init-db.sh`, `config/caddy/Caddyfile`) n'existait pas au `up` ; Docker a cree un repertoire vide a sa place.
 **Solution** : `docker compose down`, supprimer le repertoire fautif, refaire les copies de l'etape 2.2, `docker compose up -d`. Si Postgres a deja initialise un volume sans les bases : `docker compose down -v` (donnees perdues — uniquement sur une installation neuve).
+
+### `systemctl status spark-compose.service` est `failed`, les conteneurs tournent
+
+**Cause** : `systemctl restart` (ou `start`) alors que `~/infra/.env` ou `compose.yml` manque : l'unit refuse de demarrer (`ExecStartPre`) et, au `restart`, saute volontairement le `docker compose down` pour ne pas couper le site (journal : `docker compose down NON execute`).
+**Solution** : remettre le fichier manquant (`.env` depuis la derniere archive `secrets-*.tar.age` si besoin), puis `sudo systemctl start spark-compose.service`. Pour appliquer un changement en exploitation, toujours `start` (rejoue `up -d`), jamais `restart`.
 
 ### n8n affiche "secure cookie" error
 

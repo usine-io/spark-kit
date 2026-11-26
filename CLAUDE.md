@@ -22,7 +22,7 @@ Ne pas recreer ici une copie du briefing : elle redivergerait. Toute amelioratio
 | `INCIDENTS.md` | Incidents transverses (`INC-NN`, numerotes dans l'ordre chronologique, sans date) |
 | `ROADMAP.md` | Roadmap du kit |
 | `CHANGELOG.md` | Une entree par lot de mise a jour du kit |
-| `deploy/` | **Source unique de l'infra** : `compose.yml`, `env.example`, `config/caddy/`, `config/postgres/`, `scripts/`, `linux/systemd/` |
+| `deploy/` | **Source unique de l'infra** : `compose.yml`, `env.example`, `config/caddy/`, `config/postgres/`, `scripts/` (dont `check-env.sh`, `backup.sh`, `restore-test.sh`), `linux/systemd/` |
 
 ## Infra : une seule source
 
@@ -31,7 +31,7 @@ L'infra (compose, Caddyfile, init-db, env.example, scripts dont `mcp-n8n.sh`, un
 - `deploy/scripts/selftest-install.sh --up` (rejoue les copies des guides, `docker compose config`, `caddy validate`, `up`, sondes par marqueur, `down -v`) ;
 - `deploy/scripts/pin-digests.sh --check deploy/compose.yml` et `--check deploy/scripts/mcp-n8n.sh` (les digests sont ceux que les tags servent) ;
 - `shellcheck -x deploy/scripts/*.sh deploy/config/postgres/init-db.sh` ;
-- `docker run --rm -v "$PWD/deploy/config/caddy:/etc/caddy:ro" caddy:<tag du compose> caddy fmt --diff /etc/caddy/Caddyfile` (le Caddyfile reste au format `caddy fmt`, tabulations) ;
+- `docker run --rm -v "$PWD/deploy/config/caddy:/etc/caddy:ro" caddy:<tag du compose> caddy fmt --diff /etc/caddy/Caddyfile` : le Caddyfile reste au format `caddy fmt` (tabulations). Critere : la sortie ne contient **aucune ligne commencant par `+` ou `-`** (la commande peut sortir en code 0 ou non selon la version, seul le diff compte) ;
 - relire les guides pour que chaque chemin cite existe dans `deploy/`.
 
 **Exceptions tolerees au « jamais de heredoc »**, parce que propres a chaque site ou a chaque poste et non a l'infra : les plists launchd du guide macOS (Colima, cloudflared), la configuration cloudflared `config-spark.yml` (identifiant de tunnel du site) et `.mcp.json` (fichier local de Claude Code). Elles rejoindront `deploy/` lorsque cloudflared passera dans le compose (lot suivant). Tout le reste, scripts compris, vit dans `deploy/`.
