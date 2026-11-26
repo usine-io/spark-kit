@@ -22,9 +22,10 @@ usage() {
 prefix="" domain="" port="18080" force=0 target=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --prefix) prefix="${2:-}"; shift 2 ;;
-    --domain) domain="${2:-}"; shift 2 ;;
-    --port) port="${2:-}"; shift 2 ;;
+    --prefix|--domain|--port)
+      [ $# -ge 2 ] || { printf '%s attend une valeur\n' "$1" >&2; usage; }
+      case "$1" in --prefix) prefix="$2" ;; --domain) domain="$2" ;; --port) port="$2" ;; esac
+      shift 2 ;;
     --force) force=1; shift ;;
     -h|--help) usage ;;
     -*) printf 'option inconnue : %s\n' "$1" >&2; usage ;;
@@ -35,8 +36,11 @@ done
 if [ -z "$prefix" ] || [ -z "$domain" ] || [ -z "$target" ]; then usage; fi
 [ -f "$TEMPLATE" ] || { printf 'gabarit introuvable : %s\n' "$TEMPLATE" >&2; exit 2; }
 printf '%s' "$prefix" | grep -Eq '^[a-z0-9][a-z0-9-]*$' || { printf 'prefix invalide (a-z0-9-) : %s\n' "$prefix" >&2; exit 2; }
-printf '%s' "$domain" | grep -Eq '^[a-z0-9.-]+\.[a-z]+$' || { printf 'domaine invalide : %s\n' "$domain" >&2; exit 2; }
-printf '%s' "$port" | grep -Eq '^[0-9]+$' || { printf 'port invalide : %s\n' "$port" >&2; exit 2; }
+# Domaine : etiquettes de 1 a 63 caracteres a-z0-9, tiret ni en tete ni en queue, TLD alphabetique.
+printf '%s' "$domain" | grep -Eq '^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$' || { printf 'domaine invalide (ex. acme.example) : %s\n' "$domain" >&2; exit 2; }
+if ! printf '%s' "$port" | grep -Eq '^[0-9]{1,5}$' || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+  printf 'port invalide (1-65535) : %s\n' "$port" >&2; exit 2
+fi
 if [ -e "$target" ] && [ "$force" -ne 1 ]; then
   printf '%s existe deja ; --force pour l ecraser (les secrets actuels seraient perdus)\n' "$target" >&2
   exit 2
@@ -84,7 +88,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 done < "$TEMPLATE" > "$tmp"
 
 for name in $REQUIRED; do
-  grep -q "^${name}=.." "$tmp" || { printf 'gabarit sans ligne %s= : abandon\n' "$name" >&2; exit 2; }
+  grep -q "^${name}=." "$tmp" || { printf 'gabarit sans ligne %s= : abandon\n' "$name" >&2; exit 2; }
 done
 
 mv "$tmp" "$target"

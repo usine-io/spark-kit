@@ -2,8 +2,14 @@
 # deploy/scripts/lib.sh — fonctions communes aux scripts du kit. A sourcer, pas a executer.
 # Les scripts sont copies tels quels dans infra/scripts/ : ils retrouvent infra/ par leur
 # propre chemin (../), ou par SPARK_INFRA_DIR si on les lance depuis ailleurs.
+# Compatible bash 3.2 (macOS) et bash 5 (Linux).
+
+# Derniere erreur emise par spark_die : reprise dans le message d'alerte (spark_alert).
+# Les messages de spark_die nomment des fichiers et des variables, jamais une valeur secrete.
+SPARK_LAST_ERROR=""
 
 spark_die() {
+  SPARK_LAST_ERROR="$*"
   printf 'ERREUR: %s\n' "$*" >&2
   exit 2
 }
@@ -34,18 +40,71 @@ spark_infra_dir() {
   printf '%s\n' "$dir"
 }
 
+# Valeur « utile » d'une variable : sans les espaces (les guillemets sont deja retires par le
+# shell qui a charge le .env). Vide si la variable n'est pas definie.
+spark_env_value() {
+  local name="$1" value
+  value="${!name:-}"
+  printf '%s' "$value" | tr -d '[:space:]'
+}
+
 # Charge .env dans l'environnement (set -a) et verifie la presence des variables demandees,
 # par NOM uniquement : rien n'est affiche.
+# Priorite : une variable DEJA NON VIDE dans l'environnement (ligne de commande, Environment=
+# d'une unit systemd) l'emporte sur le .env, y compris sur une ligne vide « NOM= » — meme regle
+# que docker compose. Le .env fait foi pour tout ce qui n'est pas pose dans l'environnement.
 spark_load_env() {
-  local env_file="$1" var
+  local env_file="$1" var name line
   shift
+  local kept=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      [A-Za-z_]*=*)
+        name="${line%%=*}"
+        case "$name" in *[!A-Za-z0-9_]*) continue ;; esac
+        [ -n "${!name:-}" ] && kept+=("$name=${!name}")
+        ;;
+    esac
+  done < "$env_file"
   set -a
   # shellcheck disable=SC1090
   . "$env_file"
   set +a
+  if [ "${#kept[@]}" -gt 0 ]; then
+    for line in "${kept[@]}"; do export "${line?}"; done
+  fi
   for var in "$@"; do
-    [ -n "${!var:-}" ] || spark_die "variable $var vide ou absente dans $env_file"
+    [ -n "$(spark_env_value "$var")" ] || spark_die "variable $var absente ou vide dans $env_file"
   done
+}
+
+# Verrou d'execution (un seul backup.sh, un seul restore-test.sh a la fois).
+# `flock -n` quand il existe (Linux) ; sinon (macOS) un repertoire + pid, libere par spark_unlock.
+# Appele AVANT le trap EXIT des scripts : un deuxieme lancement sort en code 2 avec un message
+# clair, sans alerte (rien n'est casse : la premiere execution continue).
+SPARK_LOCK_DIR=""
+spark_lock() {
+  local lock="$1" what="$2" pid
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>>"$lock"
+    flock -n 9 || spark_die "$what deja en cours d'execution (verrou $lock) : rien n'est fait"
+  else
+    if ! mkdir "$lock.d" 2>/dev/null; then
+      pid="$(cat "$lock.d/pid" 2>/dev/null || true)"
+      if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        spark_die "$what deja en cours d'execution (pid $pid, verrou $lock.d) : rien n'est fait"
+      fi
+      rm -rf "$lock.d"
+      mkdir "$lock.d" || spark_die "verrou $lock.d impossible a poser"
+    fi
+    printf '%s\n' "$$" > "$lock.d/pid"
+    SPARK_LOCK_DIR="$lock.d"
+  fi
+}
+spark_unlock() {
+  [ -n "$SPARK_LOCK_DIR" ] && rm -rf "$SPARK_LOCK_DIR"
+  SPARK_LOCK_DIR=""
+  return 0
 }
 
 # Nom du projet compose (prefixe des volumes et des conteneurs). Jamais code en dur.
@@ -58,14 +117,30 @@ spark_project_name() {
   printf '%s\n' "${name:-spark}"
 }
 
+# Image (tag@digest) d'un service telle que le compose la fige, sans exiger que le service
+# tourne : `config --format json` + jq, sinon `config --images` filtre par le depot de l'image.
+#   spark_service_image postgres 'postgres'      spark_service_image n8n 'n8nio/n8n'
+spark_service_image() {
+  local service="$1" repo="$2" image
+  image="$(spark_compose config --format json 2>/dev/null | jq -r --arg s "$service" '.services[$s].image // empty' 2>/dev/null || true)"
+  if [ -z "$image" ]; then
+    image="$(spark_compose config --images 2>/dev/null | grep -E "^(docker\.io/)?(library/)?${repo}[:@]" | head -1 || true)"
+  fi
+  [ -n "$image" ] || spark_die "image du service $service introuvable dans compose.yml (docker compose config)"
+  printf '%s\n' "$image"
+}
+
 # Alerte d'echec : toujours sur stderr, et vers SPARK_ALERT_WEBHOOK (POST JSON) s'il est defini.
+# La derniere ligne ERREUR du script (SPARK_LAST_ERROR) est jointe : elle ne porte jamais de valeur
+# secrete, seulement des noms de fichiers et de variables.
 spark_alert() {
   local script="$1" message="$2" payload
+  [ -n "$SPARK_LAST_ERROR" ] && message="$message — ERREUR: $SPARK_LAST_ERROR"
   printf 'ALERTE [%s] %s: %s\n' "$(hostname)" "$script" "$message" >&2
   if [ -n "${SPARK_ALERT_WEBHOOK:-}" ]; then
     payload="$(jq -cn --arg host "$(hostname)" --arg script "$script" --arg message "$message" \
-      --arg ts "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-      '{host: $host, script: $script, message: $message, ts: $ts, status: "failure"}')"
+      --arg error "$SPARK_LAST_ERROR" --arg ts "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+      '{host: $host, script: $script, message: $message, error: $error, ts: $ts, status: "failure"}')"
     curl -fsS -m 15 -A "spark-kit-alert/1" -H 'Content-Type: application/json' \
       -d "$payload" "$SPARK_ALERT_WEBHOOK" >/dev/null 2>&1 \
       || printf 'ALERTE: le webhook SPARK_ALERT_WEBHOOK n a pas repondu\n' >&2

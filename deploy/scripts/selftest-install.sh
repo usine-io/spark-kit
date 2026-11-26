@@ -4,7 +4,9 @@
 # Usage : selftest-install.sh [--up] [--keep]
 #   (defaut) copie deploy/ comme le guide le demande, cree un .env de test, puis :
 #            `docker compose config` sans variable manquante, `caddy validate` avec sites.d/ vide
-#            puis avec un fichier, et verifie que chaque chemin monte existe (test -f).
+#            puis avec un fichier, verifie que chaque chemin monte existe (test -f), puis teste
+#            check-env.sh (valeurs vides, espaces, un caractere), la priorite environnement > .env
+#            de lib.sh et le verrou d'execution.
 #   --up     demarre ensuite la stack sous le projet compose `spark-selftest` (port hote 18090),
 #            attend que -n8n et -db repondent via Caddy avec un MARQUEUR dans le corps (Caddy repond
 #            200 et corps vide a tout Host inconnu : un 200 seul ne prouve rien), puis detruit tout.
@@ -114,8 +116,47 @@ for s in "$INFRA"/scripts/*.sh; do
   if bash -n "$s"; then ok "$(basename "$s")"; else fail "$(basename "$s") : erreur de syntaxe"; fi
 done
 
+printf '== 6. check-env.sh : valeur resolue, sans guillemets ni espaces (cas T19)\n'
+# Le .env genere est complet ; puis des copies ou SPARK_PREFIX est vide, fait d'espaces, long d'un
+# caractere, entre guillemets, ou absent. Jamais de faux vert sur '' ou '  ', jamais de faux rouge sur 'a'.
+if out="$("$INFRA/scripts/check-env.sh" --env "$INFRA/.env" 2>&1)"; then ok ".env genere : $(printf '%s' "$out" | grep -c '^OK') variables renseignees"; else fail "check-env sur le .env genere : $out"; fi
+env_case() {  # libelle, ligne SPARK_PREFIX a substituer ('' = ligne retiree), resultat attendu (0 ou 1)
+  local label="$1" line="$2" want="$3" f="$work/env-case" rc=0 out
+  grep -v '^SPARK_PREFIX=' "$INFRA/.env" > "$f"
+  [ -n "$line" ] && printf '%s\n' "$line" >> "$f"
+  out="$("$INFRA/scripts/check-env.sh" --env "$f" SPARK_PREFIX 2>&1)" || rc=$?
+  if [ "$rc" -eq "$want" ]; then ok "SPARK_PREFIX $label -> code $rc ($out)"; else fail "SPARK_PREFIX $label -> code $rc, attendu $want ($out)"; fi
+}
+env_case "vide (NOM=)" "SPARK_PREFIX=" 1
+env_case "guillemets vides" "SPARK_PREFIX=''" 1
+env_case "espaces entre guillemets" "SPARK_PREFIX='  '" 1
+env_case "espaces nus" "SPARK_PREFIX=   " 1
+env_case "un caractere" "SPARK_PREFIX=a" 0
+env_case "un caractere entre guillemets" 'SPARK_PREFIX="a"' 0
+env_case "ligne absente" "" 1
+rm -f "$work/env-case"
+
+printf '== 7. lib.sh : priorite de l environnement sur une ligne vide du .env, verrou\n'
+printf 'SPARK_ALERT_WEBHOOK=\nOTHER=from-env-file\n' > "$work/env-prec"
+out="$(cd "$INFRA/scripts" && SPARK_ALERT_WEBHOOK=http://acme.example/hook OTHER='' bash -c '. ./lib.sh; spark_load_env "$1"; printf "%s|%s" "$SPARK_ALERT_WEBHOOK" "$OTHER"' _ "$work/env-prec")"
+if [ "$out" = "http://acme.example/hook|from-env-file" ]; then ok "variable posee gardee, variable vide prise au .env ($out)"; else fail "priorite .env/environnement : « $out »"; fi
+if (cd "$INFRA/scripts" && bash -c '. ./lib.sh; spark_load_env "$1" OTHER' _ "$work/env-prec" >/dev/null 2>&1); then ok "spark_load_env accepte une variable renseignee"; else fail "spark_load_env refuse OTHER renseignee"; fi
+if (cd "$INFRA/scripts" && bash -c '. ./lib.sh; spark_load_env "$1" SPARK_ALERT_WEBHOOK' _ "$work/env-prec" >/dev/null 2>&1); then fail "spark_load_env accepte une variable vide"; else ok "spark_load_env refuse une variable vide (absente ou vide)"; fi
+rm -f "$work/env-prec"
+# Verrou : un premier detenteur garde le verrou 3 s, le second doit sortir en 2 avec le message.
+(cd "$INFRA/scripts" && bash -c '. ./lib.sh; spark_lock "$1" premier; sleep 3; spark_unlock' _ "$work/lock") &
+holder=$!
+sleep 1
+out="$(cd "$INFRA/scripts" && bash -c '. ./lib.sh; spark_lock "$1" second' _ "$work/lock" 2>&1)" && rc=0 || rc=$?
+wait "$holder" || true
+case "$rc:$out" in
+  2:*"deja en cours d'execution"*) ok "verrou : second lancement refuse ($out)" ;;
+  *) fail "verrou : code $rc, sortie « $out »" ;;
+esac
+if (cd "$INFRA/scripts" && bash -c '. ./lib.sh; spark_lock "$1" apres; spark_unlock' _ "$work/lock" >/dev/null 2>&1); then ok "verrou libere apres la premiere execution"; else fail "verrou non libere"; fi
+
 if [ "$up" -eq 1 ]; then
-  printf '== 6. docker compose up (projet %s, port %s)\n' "$PROJECT" "$PORT"
+  printf '== 8. docker compose up (projet %s, port %s)\n' "$PROJECT" "$PORT"
   spark_compose -p "$PROJECT" up -d --quiet-pull 2>&1 | grep -v -E '^\s*$' | sed 's/^/        /' || true
   # Sonde par marqueur : Caddy repond 200 avec un corps vide a tout Host qu'il ne connait pas,
   # un code 200 ne prouve donc pas le routage. On exige un fragment du corps propre au service.

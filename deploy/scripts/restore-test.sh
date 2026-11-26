@@ -4,7 +4,8 @@
 # Usage : restore-test.sh [chemin/pg_dumpall-*.sql.gz]    (defaut : le plus recent de infra/backups/)
 #
 # Un backup non teste n'est pas un backup. Le script :
-#   1. demarre un Postgres jetable avec la MEME image (tag + digest) que la stack ;
+#   1. demarre un Postgres jetable avec la MEME image (tag + digest) que celle du compose.yml
+#      (lue par `docker compose config`, la stack n'a pas besoin de tourner) ;
 #   2. y rejoue le dump avec ON_ERROR_STOP=0 et compte les ERROR (seule « role "postgres"
 #      already exists » est attendue) ;
 #   3. verifie la presence des bases n8n et nocodb, compte les tables et les migrations n8n ;
@@ -15,7 +16,9 @@
 #      dechiffrer), sauf si RESTORE_TEST_REQUIRE_CREDENTIAL=1 (variable d'environnement ou .env),
 #      a poser en production des qu'un identifiant n8n existe : l'absence devient alors fatale ;
 #   5. supprime tout (conteneurs, reseau), ecrit infra/backups/RESTORE_TEST_OK (horodatage).
-# Sortie 0 si tout passe, 2 sinon (alerte vers SPARK_ALERT_WEBHOOK si defini).
+# Sortie 0 si tout passe, 2 sinon (alerte vers SPARK_ALERT_WEBHOOK si defini, avec la derniere ligne
+# ERREUR). Une seule execution a la fois (verrou backups/.lock-restore-test) : un deuxieme lancement
+# sort en code 2 avec un message clair.
 # Ne touche jamais a la stack en production : tout se passe dans des conteneurs et un reseau dedies.
 set -euo pipefail
 
@@ -26,11 +29,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 INFRA_DIR="$(spark_infra_dir "$SCRIPT_DIR")"
 cd "$INFRA_DIR"
-# La variable posee sur la ligne de commande l'emporte sur celle du .env (charge avec set -a).
-require_credential="${RESTORE_TEST_REQUIRE_CREDENTIAL:-}"
+# spark_load_env : une variable deja posee (ligne de commande, Environment= systemd) l'emporte sur le .env.
 spark_load_env ./.env N8N_DB_PASSWORD N8N_ENCRYPTION_KEY
-require_credential="${require_credential:-${RESTORE_TEST_REQUIRE_CREDENTIAL:-0}}"
+require_credential="${RESTORE_TEST_REQUIRE_CREDENTIAL:-0}"
 BACKUP_DIR="${SPARK_BACKUP_DIR:-$INFRA_DIR/backups}"
+mkdir -p "$BACKUP_DIR"
+spark_lock "$BACKUP_DIR/.lock-restore-test" "restore-test.sh"
 
 dump="${1:-}"
 if [ -z "$dump" ]; then
@@ -39,10 +43,8 @@ fi
 if [ -z "$dump" ] || [ ! -f "$dump" ]; then spark_die "aucun dump pg_dumpall-*.sql.gz dans $BACKUP_DIR (lancer backup.sh)"; fi
 
 PROJECT="$(spark_project_name)"
-pg_cid="$(spark_compose ps -q postgres)"; [ -n "$pg_cid" ] || spark_die "postgres ne tourne pas"
-n8n_cid="$(spark_compose ps -q n8n)";     [ -n "$n8n_cid" ] || spark_die "n8n ne tourne pas"
-PG_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$pg_cid")"
-N8N_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$n8n_cid")"
+PG_IMAGE="$(spark_service_image postgres 'postgres')"
+N8N_IMAGE="$(spark_service_image n8n 'n8nio/n8n')"
 
 NET="${PROJECT}-restore-test"
 PG="${PROJECT}-restore-test-pg"
@@ -55,8 +57,10 @@ cleanup() {
   rm -f "$log"
   if [ "$status" -ne 0 ]; then
     spark_alert "restore-test.sh" "test de restauration de $(basename "$dump") en echec (code $rc)"
+    spark_unlock
     exit 2
   fi
+  spark_unlock
 }
 trap cleanup EXIT
 

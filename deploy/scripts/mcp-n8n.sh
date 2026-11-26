@@ -11,6 +11,10 @@
 # Image figee par tag ET digest comme celles du compose, jamais :latest. Montee de version = modifier
 # la ligne N8N_MCP_IMAGE volontairement, puis `pin-digests.sh` sur ce fichier, puis CHANGELOG.md.
 # N8N_API_KEY vient de infra/.env et passe par `-e NOM` sans valeur : jamais sur la ligne de commande.
+# WEBHOOK_SECURITY_MODE=permissive : n8n-mcp refuse par defaut d'appeler un webhook dont l'hote est
+# une adresse privee ou un nom interne (garde anti-SSRF). Ici la cible EST interne (http://n8n:5678,
+# reseau compose, jamais expose) : sans `permissive`, l'outil de declenchement de webhook echoue.
+# Le mode ne relache rien cote n8n ; il ne concerne que les URL que le MCP accepte d'appeler.
 # Aucune ecriture sur stdout avant l'exec : stdout est le canal MCP (stdio).
 set -euo pipefail
 

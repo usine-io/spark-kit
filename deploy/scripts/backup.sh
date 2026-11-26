@@ -3,20 +3,24 @@
 #
 # Usage : backup.sh            (depuis infra/scripts/, ou avec SPARK_INFRA_DIR=/chemin/infra)
 #
-# Produit dans infra/backups/ :
-#   pg_dumpall-<horodatage>.sql.gz      dump complet (toutes les bases, roles compris), controle
-#                                       de la derniere ligne « PostgreSQL database cluster dump complete »
-#   vol-<volume>-<horodatage>.tgz       tar de chaque volume du projet, SAUF le volume Postgres
-#                                       (un tar a chaud d'un cluster Postgres ne vaut rien : le dump le couvre)
-#   secrets-<horodatage>.tar.age|.gpg   .env + fichier config de n8n, CHIFFRES. Sans N8N_ENCRYPTION_KEY,
-#                                       les identifiants n8n d'une restauration sont illisibles.
-#   LAST_OK                             horodatage de la derniere sauvegarde complete
-# Retention locale : BACKUP_KEEP_DAYS (defaut 14). La copie hors machine (rclone copy + suppression
-# par age, jamais sync) et le test de restauration (restore-test.sh) completent le 3-2-1.
-# Sortie 0 si tout est ecrit et controle, 2 sinon (alerte envoyee a SPARK_ALERT_WEBHOOK si defini).
-# Rien n'est ecrit tant que le chiffrement des secrets n'est pas possible (destinataire age ou
-# passphrase gpg, outil present) ; chaque fichier est produit en .part et renomme en fin de succes :
-# un echec ne laisse jamais un dump « le plus recent » sans ses secrets.
+# Produit dans infra/backups/, un JEU complet par horodatage <stamp> :
+#   pg_dumpall-<stamp>.sql.gz      dump complet (toutes les bases, roles compris), controle
+#                                  de la derniere ligne « PostgreSQL database cluster dump complete »
+#   vol-<volume>-<stamp>.tgz       tar de chaque volume du projet, SAUF le volume Postgres
+#                                  (un tar a chaud d'un cluster Postgres ne vaut rien : le dump le couvre)
+#   secrets-<stamp>.tar.age|.gpg   .env + fichier config de n8n, CHIFFRES. Sans N8N_ENCRYPTION_KEY,
+#                                  les identifiants n8n d'une restauration sont illisibles.
+#   LAST_OK                        horodatage de la derniere sauvegarde complete
+# Retention locale : BACKUP_KEEP_DAYS (defaut 14), par jeu complet (tous les fichiers d'un meme
+# horodatage partent ensemble). La copie hors machine (rclone copy + suppression par age, jamais
+# sync) et le test de restauration (restore-test.sh) completent le 3-2-1.
+# Sortie 0 si tout est ecrit et controle, 2 sinon (alerte envoyee a SPARK_ALERT_WEBHOOK si defini,
+# avec la derniere ligne ERREUR). Une seule execution a la fois (verrou backups/.lock-backup) :
+# un deuxieme lancement sort en code 2 avec un message clair, sans rien toucher.
+# Rien n'est ecrit tant que le chiffrement des secrets n'est pas possible (destinataire age valide
+# ou passphrase gpg lisible, outil present) ; chaque fichier est produit en .part et renomme en fin
+# de succes, secrets et volumes d'abord, dump en dernier : restore-test.sh prend « le dump le plus
+# recent », qui a donc toujours ses secrets et ses volumes a cote de lui.
 #
 # `docker compose exec -T` : TOUJOURS -T. Un TTY alloue reecrit les fins de ligne et corrompt le dump.
 set -euo pipefail
@@ -34,6 +38,7 @@ KEEP_DAYS="${BACKUP_KEEP_DAYS:-14}"
 STAMP="$(date '+%Y%m%d-%H%M%S')"
 mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR"
+spark_lock "$BACKUP_DIR/.lock-backup" "backup.sh"
 
 status=2
 tmpdir=""
@@ -45,14 +50,19 @@ cleanup() {
     # Aucun fichier partiel ne doit passer pour une sauvegarde (restore-test prend « le plus recent »).
     [ "${#parts[@]}" -gt 0 ] && rm -f "${parts[@]}"
     spark_alert "backup.sh" "sauvegarde $STAMP incomplete (code $rc) dans $BACKUP_DIR"
+    spark_unlock
     exit 2
   fi
+  spark_unlock
 }
 trap cleanup EXIT
 
 # 0. Pre-requis du chiffrement des secrets : verifies AVANT d'ecrire quoi que ce soit --------
 if [ -n "${BACKUP_AGE_RECIPIENT:-}" ]; then
   command -v age >/dev/null || spark_die "age absent (apt install age / brew install age)"
+  # Destinataire valide ? age refuse un « age1... » mal forme ou tronque ; test a blanc sur un flux vide.
+  printf '' | age -r "$BACKUP_AGE_RECIPIENT" -o /dev/null 2>/dev/null \
+    || spark_die "BACKUP_AGE_RECIPIENT invalide (cle publique age1... attendue) : rien n'est ecrit"
   secrets_mode=age
 elif [ -n "${BACKUP_GPG_PASSPHRASE_FILE:-}" ]; then
   command -v gpg >/dev/null || spark_die "gpg absent (apt install gnupg / brew install gnupg)"
@@ -74,23 +84,33 @@ volumes="$(docker volume ls -q --filter "label=com.docker.compose.project=$PROJE
 dump="$BACKUP_DIR/pg_dumpall-$STAMP.sql.gz"
 parts+=("$dump.part")
 spark_log "dump pg_dumpall -> $dump"
-spark_compose exec -T postgres pg_dumpall -U postgres | gzip -c > "$dump.part"
-# pg_dumpall termine par la ligne de controle suivie d'une ligne vide : on lit les 3 dernieres.
-last="$(gzip -dc "$dump.part" | tail -n 3 | tr '\n' ' ')"
-case "$last" in
-  *"PostgreSQL database cluster dump complete"*) ;;
-  *) spark_die "dump tronque : fin de fichier « $last »" ;;
-esac
+# Jusqu'a 3 essais : juste apres un demarrage, les migrations de n8n peuvent interbloquer le
+# LOCK TABLE de pg_dump (deadlock detected), ce qui est passager. stdin sur /dev/null : `exec -T`
+# transmet encore l'entree standard, qui ne doit pas etre celle d'un script appelant.
+dump_ok=0
+for attempt in 1 2 3; do
+  if spark_compose exec -T postgres pg_dumpall -U postgres </dev/null | gzip -c > "$dump.part"; then
+    # pg_dumpall termine par la ligne de controle suivie d'une ligne vide : on lit les 3 dernieres.
+    last="$(gzip -dc "$dump.part" | tail -n 3 | tr '\n' ' ')"
+    case "$last" in *"PostgreSQL database cluster dump complete"*) dump_ok=1; break ;; esac
+    spark_log "essai $attempt : dump tronque (fin de fichier « $last »)"
+  else
+    spark_log "essai $attempt : pg_dumpall en echec"
+  fi
+  [ "$attempt" -lt 3 ] && sleep 15
+done
+[ "$dump_ok" -eq 1 ] || spark_die "dump pg_dumpall en echec apres 3 essais (voir les lignes pg_dump ci-dessus)"
 chmod 600 "$dump.part"
 
 # 2. Volumes hors Postgres --------------------------------------------------------------
+vol_parts=()
 for vol in $volumes; do
   short="${vol#"${PROJECT}_"}"
   case "$short" in
     postgres*_data) spark_log "volume $vol ignore (couvert par le dump)"; continue ;;
   esac
   out="$BACKUP_DIR/vol-$short-$STAMP.tgz"
-  parts+=("$out.part")
+  parts+=("$out.part"); vol_parts+=("$out.part")
   spark_log "volume $vol -> $out"
   docker run --rm -v "$vol:/v:ro" "$TOOL_IMAGE" tar czf - -C /v . > "$out.part"
   gzip -t "$out.part" || spark_die "archive $out illisible (gzip -t)"
@@ -119,17 +139,35 @@ fi
 chmod 600 "$secrets.part"
 rm -rf "$tmpdir"; tmpdir=""
 
-# Tout est ecrit et controle : les .part deviennent les fichiers definitifs, d'un coup.
-for part in "${parts[@]}"; do
-  mv "$part" "${part%.part}"
-done
+# Tout est ecrit et controle : les .part deviennent definitifs dans un ordre sur, secrets puis
+# volumes puis dump. Le dump n'apparait qu'en dernier : des qu'il existe, son jeu est complet.
+mv "$secrets.part" "$secrets"
+if [ "${#vol_parts[@]}" -gt 0 ]; then
+  for part in "${vol_parts[@]}"; do mv "$part" "${part%.part}"; done
+fi
+mv "$dump.part" "$dump"
 parts=()
 spark_log "secrets chiffres -> $secrets"
 
-# 4. Retention locale -------------------------------------------------------------------
-find "$BACKUP_DIR" -maxdepth 1 -type f \
-  \( -name 'pg_dumpall-*.sql.gz' -o -name 'vol-*.tgz' -o -name 'secrets-*.tar.*' \) \
-  -mtime +"$KEEP_DAYS" -print -delete | sed 's/^/retention: suppression /' || true
+# 4. Retention locale, par jeu complet --------------------------------------------------
+# Un dump plus vieux que KEEP_DAYS emporte tous les fichiers de son horodatage ; un .part oublie
+# (coupure brutale) part au bout d'un jour.
+find "$BACKUP_DIR" -maxdepth 1 -type f -name 'pg_dumpall-*.sql.gz' -mtime +"$KEEP_DAYS" -print 2>/dev/null \
+  | while IFS= read -r old; do
+      stamp="${old##*/pg_dumpall-}"; stamp="${stamp%.sql.gz}"
+      case "$stamp" in [0-9]*-[0-9]*) ;; *) continue ;; esac
+      find "$BACKUP_DIR" -maxdepth 1 -type f \( -name "pg_dumpall-$stamp.sql.gz" -o -name "vol-*-$stamp.tgz" \
+        -o -name "secrets-$stamp.tar.*" \) -print -delete | sed "s/^/retention: suppression du jeu $stamp : /"
+    done || true
+# Orphelins (volume ou secrets d'un horodatage dont le dump n'existe plus) au-dela de KEEP_DAYS.
+find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'vol-*.tgz' -o -name 'secrets-*.tar.*' \) -mtime +"$KEEP_DAYS" -print 2>/dev/null \
+  | while IFS= read -r old; do
+      stamp="$(printf '%s' "${old##*/}" | sed -n 's/.*-\([0-9]\{8\}-[0-9]\{6\}\)\.\(tgz\|tar\..*\)$/\1/p')"
+      [ -n "$stamp" ] && [ ! -f "$BACKUP_DIR/pg_dumpall-$stamp.sql.gz" ] || continue
+      rm -f "$old" && printf 'retention: suppression de l orphelin %s\n' "$old"
+    done || true
+find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.part' -mtime +1 -print -delete 2>/dev/null \
+  | sed 's/^/retention: suppression du fichier partiel /' || true
 
 date '+%Y-%m-%dT%H:%M:%S' > "$BACKUP_DIR/LAST_OK"
 status=0

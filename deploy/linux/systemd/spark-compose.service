@@ -15,7 +15,12 @@ WorkingDirectory=/opt/spark/infra
 ExecStartPre=/bin/sh -c 'test -f /opt/spark/infra/.env || { echo "/opt/spark/infra/.env absent" >&2; exit 1; }'
 ExecStartPre=/bin/sh -c 'test -f /opt/spark/infra/compose.yml || { echo "/opt/spark/infra/compose.yml absent" >&2; exit 1; }'
 ExecStart=/usr/bin/docker compose up -d --remove-orphans
-ExecStop=/usr/bin/docker compose down
+# `docker compose down` SEULEMENT si la config est en place. Sinon (restart sur un .env ou un
+# compose.yml absent), l'arret est saute et les conteneurs restent en place : une config cassee
+# ne doit jamais couper le site. Le journal le dit ; corriger, puis `systemctl start`.
+# En exploitation, appliquer un changement = `systemctl start spark-compose.service` (idempotent,
+# rejoue `up -d`), pas `restart`.
+ExecStop=/bin/sh -c 'if test -f /opt/spark/infra/.env && test -f /opt/spark/infra/compose.yml; then exec /usr/bin/docker compose down; fi; echo "spark-compose: .env ou compose.yml absent, docker compose down NON execute, les conteneurs restent en place" >&2'
 TimeoutStartSec=120
 
 [Install]
