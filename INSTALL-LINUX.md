@@ -116,7 +116,7 @@ sudo apt-get update
 sudo apt-get install -y cloudflared
 ```
 
-> Le nom de version vient de `/etc/os-release` comme en 1.2 : `lsb_release` n'est installe qu'en 1.4 et manque sur une Debian minimale.
+> Le nom de version vient de `/etc/os-release` comme en 1.2 : `lsb_release` manque sur une Debian minimale et ce guide ne l'installe pas.
 
 Verifier (et noter la version dans le runbook) :
 
@@ -127,7 +127,7 @@ cloudflared --version
 ### 1.4 — Installer les outils
 
 ```bash
-sudo apt-get install -y jq curl git tmux lsb-release python3 age
+sudo apt-get install -y jq curl git tmux python3 age
 ```
 
 > `python3` est present par defaut sur Debian mais explicite ici : les jobs planifies
@@ -246,7 +246,7 @@ Le `compose.yml` est commente ; l'essentiel :
 - **`mem_limit` sur n8n et NocoDB** : sans plafond, une rafale d'imports peut pousser un
   service a evincer les autres (incidents OOM vecus chez une PME). Ajuster a la RAM du
   serveur, mais toujours en poser un
-- Le repertoire `config/caddy/` est monte en entier : on peut remplacer le Caddyfile ou poser un fichier dans `sites.d/` puis `caddy reload`, sans redemarrer le conteneur
+- Le repertoire `config/caddy/` est monte en entier : on peut remplacer le Caddyfile ou poser un fichier dans `sites.d/` puis `caddy reload`, sans redemarrer le conteneur. Tant que `sites.d/` ne contient aucun fichier `.caddy` (c'est le cas apres l'installation : seul `.keep` s'y trouve), Caddy ecrit a chaque demarrage et a chaque `validate` un avertissement `No files matching import glob pattern` avec le motif `/etc/caddy/sites.d/*.caddy` : **attendu, sans gravite**, il disparait au premier vhost pose. Au demarrage, `docker compose logs caddy` montre aussi `HTTP/2 skipped because it requires TLS` et `HTTP/3 skipped because it requires TLS` : attendus eux aussi, Caddy ne sert que du HTTP en interne, le TLS est chez Cloudflare
 
 ---
 
@@ -593,13 +593,20 @@ header {
 }
 ```
 
-Le bloc est indente en **tabulations**, comme le reste du Caddyfile du kit (format `caddy fmt`) : un bloc colle en espaces fonctionne mais fait apparaitre l'avertissement `Caddyfile input is not formatted` au `validate`/`reload`. Valider **avant** de recharger, puis recharger Caddy (le repertoire est monte : l'edition en place est vue par le conteneur) :
+Le bloc est indente en **tabulations**, comme le reste du Caddyfile du kit (format `caddy fmt`). Valider **avant** de recharger, puis recharger Caddy (le repertoire est monte : l'edition en place est vue par le conteneur) :
 
 ```bash
 cd ~/infra
 docker compose exec caddy caddy validate --config /etc/caddy/Caddyfile
 docker compose exec caddy caddy reload --config /etc/caddy/Caddyfile
 ```
+
+Le `validate` ecrit quelques lignes JSON de niveau `info` et se termine par `Valid configuration` ; c'est cette derniere ligne qui compte. Deux lignes de niveau `warn` sont **attendues et sans gravite** :
+
+- `No files matching import glob pattern` avec `"pattern":"/etc/caddy/sites.d/*.caddy"` : `sites.d/` ne contient encore aucun fichier `.caddy` (seul `.keep`), l'`import` du Caddyfile ne trouve rien. Elle apparait aussi dans `docker compose logs caddy` a chaque demarrage, et disparait au premier vhost pose dans `sites.d/` ;
+- `Caddyfile input is not formatted` : seulement si le bloc a ete colle en espaces au lieu de tabulations ; il fonctionne quand meme (`caddy fmt --overwrite` le remet au format).
+
+Toute autre ligne `warn` ou `error`, ou l'absence de `Valid configuration`, est une erreur a corriger avant le `reload`.
 
 > Cette edition rend le Caddyfile du site different de celui du kit : c'est attendu, et visible par `diff -ru ~/spark-kit/deploy/config ~/infra/config`.
 
@@ -699,14 +706,21 @@ sudo -u spark bash -c '
 '
 ```
 
-Tout doit afficher OK. Le bloc Caddy tourne sous `spark` parce que `.env` est en `600` : lance par l'administrateur, `. /opt/spark/infra/.env` echouerait en silence, les variables resteraient vides et la sonde interrogerait `Host: -n8n.` — d'ou le garde-fou `check-env.sh SPARK_PREFIX SPARK_DOMAIN` (valeur resolue, sans guillemets ni espaces). Si un service manque, verifier :
+Attendu, bloc par bloc :
+
+- `=== Services systemd ===` : `active` puis `compose: OK` ; `active` puis `cloudflared: OK` ; puis la ligne des timers, qui affiche **`active` deux fois** (une par timer, `systemctl is-active` ecrit un etat par unit, il n'ecrit jamais `OK`) ;
+- `=== Containers ===` : 4 conteneurs `Up` (`spark-postgres-1` avec `(healthy)`) ;
+- `=== Caddy → services ===` : `-n8n   OK` et `-db    OK` ;
+- `=== Tunnel HTTPS ===` : une ligne de statut, `HTTP/2 200` ou `HTTP/2 302` (Cloudflare Access).
+
+Tout autre texte (`FAIL`, `inactive`, `failed`, `Restarting`, `Exited`, une sonde `FAIL`) designe le service a verifier. Le bloc Caddy tourne sous `spark` parce que `.env` est en `600` : lance par l'administrateur, `. /opt/spark/infra/.env` echouerait en silence, les variables resteraient vides et la sonde interrogerait `Host: -n8n.` — d'ou le garde-fou `check-env.sh SPARK_PREFIX SPARK_DOMAIN` (valeur resolue, sans guillemets ni espaces). Si un service manque, verifier :
 
 ```bash
 sudo systemctl status spark-compose.service
 sudo journalctl -u spark-cloudflared.service --since "5 min ago"
 ```
 
-> **Avant l'etape 4** (test de reboot fait sur une stack sans tunnel, par exemple sur un serveur de recette) : `cloudflared: FAIL` et une ligne `=== Tunnel HTTPS ===` vide sont **normaux**, le service `spark-cloudflared` n'existe pas encore et le domaine ne pointe nulle part. Tout le reste (`compose: OK`, les deux timers `active`, 4 conteneurs `Up`, sondes `-n8n` et `-db` `OK`) doit etre vert.
+> **Avant l'etape 4** (test de reboot fait sur une stack sans tunnel, par exemple sur un serveur de recette) : `inactive` puis `cloudflared: FAIL`, et **rien** sous `=== Tunnel HTTPS ===` (la ligne reste vide : `curl` n'obtient aucune reponse, le domaine ne pointe nulle part) sont **normaux**, le service `spark-cloudflared` n'existe pas encore. Tout le reste (`active` et `compose: OK`, les deux timers `active`, 4 conteneurs `Up`, sondes `-n8n` et `-db` `OK`) doit etre la.
 
 ---
 

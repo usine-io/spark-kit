@@ -34,5 +34,7 @@ http://{$SPARK_PREFIX}-db.{$SPARK_DOMAIN} {
 }
 
 # Vhosts additionnels propres au site : un fichier *.caddy par vhost dans sites.d/.
-# Le repertoire existe toujours (fichier .keep) : un import sans correspondance est accepte.
+# Le repertoire existe toujours (fichier .keep) : un import sans correspondance est accepte, avec un
+# avertissement « No files matching import glob pattern » au demarrage et au validate tant qu'aucun
+# fichier .caddy n'est pose (attendu, sans gravite).
 import /etc/caddy/sites.d/*.caddy

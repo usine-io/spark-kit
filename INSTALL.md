@@ -202,7 +202,7 @@ out=$(docker compose config -q 2>&1); [ -z "$out" ] && echo "compose: OK" || { e
 
 > `header_up X-Forwarded-Proto https` dans le Caddyfile est obligatoire : Caddy recoit du HTTP depuis cloudflared, mais les apps doivent croire qu'elles sont en HTTPS (sinon n8n refuse les cookies securises).
 
-> **Pas de Dockerfile MCP NocoDB.** L'agent accede a NocoDB via son API v3 (PAT) en passant par le CLI bundle dans la skill `nocodb` — pas via un serveur MCP. Raison : l'ecosysteme MCP NocoDB n'est pas stable contre NocoDB 2026.04.5+ (les packages disponibles ciblent v1/v2 qui rejettent les PAT). Cf. INC-2026-05-19 dans `INCIDENTS.md`.
+> **Pas de Dockerfile MCP NocoDB.** L'agent accede a NocoDB via son API v3 (PAT) en passant par le CLI bundle dans la skill `nocodb` — pas via un serveur MCP. Raison : l'ecosysteme MCP NocoDB n'est pas stable contre NocoDB 2026.04.5+ (les packages disponibles ciblent v1/v2 qui rejettent les PAT). Cf. INC-02 dans `INCIDENTS.md`.
 
 ### Points cles du compose
 
@@ -422,7 +422,7 @@ echo "=== Tailscale ==="
 /Applications/Tailscale.app/Contents/MacOS/Tailscale status --json 2>/dev/null | jq -r '.Self.Online' && echo "OK" || echo "FAIL"
 ```
 
-Tout doit afficher OK. Si un service manque, verifier le LaunchAgent correspondant avec `launchctl list | grep spark`.
+Attendu : `OK` sous `=== Colima ===` et sous `=== Tailscale ===`, 4 conteneurs `Up` sous `=== Containers ===`, `-n8n   OK` et `-db    OK` sous `=== Caddy → services ===`, et une ligne de statut (`HTTP/2 200` ou `302`) sous `=== Tunnel ===` (vide tant que le tunnel de l'etape 4 n'est pas en place). Si un service manque, verifier le LaunchAgent correspondant avec `launchctl list | grep spark`.
 
 ---
 
