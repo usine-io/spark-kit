@@ -304,7 +304,7 @@ systemctl is-active spark-compose.service   # attendu : active
 
 > Le fichier `spark-compose.service` est fourni dans `deploy/linux/systemd/` **du kit** (`/opt/spark/spark-kit`). Il lance `docker compose up -d` au demarrage du serveur en tant qu'utilisateur `spark`, et refuse de demarrer si `~/infra/.env` ou `compose.yml` manque (le fichier absent est nomme dans `journalctl -u spark-compose.service`). `enable --now` l'active tout de suite : `up -d` est idempotent, la stack deja lancee n'est pas touchee. Avec un simple `enable`, le service resterait `inactive` jusqu'au prochain reboot et l'etape 7 afficherait `compose: FAIL`.
 
-> ⚠️ **`systemctl start`, jamais `restart`, pour appliquer un changement.** `start` rejoue `docker compose up -d` (idempotent : seuls les services dont la definition a change sont recrees). `restart` passe par `ExecStop` : sur une config complete c'est un `docker compose down` qui **coupe le site** le temps du redemarrage. Si `.env` ou `compose.yml` manque au moment du `restart`, l'unit saute volontairement le `down` (les conteneurs restent en place, le journal le dit : `docker compose down NON execute`), puis echoue au demarrage : une config cassee ne coupe pas le site, mais `systemctl status` est `failed` jusqu'a correction, puis `sudo systemctl reset-failed spark-compose.service && sudo systemctl start spark-compose.service` (`reset-failed` efface l'etat `failed` et le compteur de relances ; l'unit du kit pose `StartLimitIntervalSec=0` pour que `start` ne soit jamais refuse avec `start request repeated too quickly`, `reset-failed` reste utile sur une unit installee avant cette ligne).
+> ⚠️ **Appliquer un changement = `sudo systemctl reload spark-compose.service`** (ou, dans le shell `spark`, `cd ~/infra && docker compose up -d`). `reload` rejoue `docker compose up -d --remove-orphans` (`ExecReload`) : idempotent, seuls les services dont la definition a change sont recrees, un service arrete est relance, et le meme garde-fou qu'au demarrage s'applique (`.env` ou `compose.yml` absent : `reload` refuse et le journal nomme le fichier). Deux commandes a **ne pas** utiliser pour cela : `systemctl start`, qui ne fait **rien** sur une unit deja `active` (systemd ne relance pas un service actif, le changement n'est pas applique) ; `systemctl restart`, qui passe par `ExecStop`, soit un `docker compose down` qui **coupe le site** le temps du redemarrage. Si `.env` ou `compose.yml` manque au moment d'un `restart`, l'unit saute volontairement le `down` (les conteneurs restent en place, journal : `docker compose down NON execute`), puis echoue au demarrage : une config cassee ne coupe pas le site, mais `systemctl status` est `failed` jusqu'a correction. Sortir de l'etat `failed`, et seulement pour cela : `sudo systemctl reset-failed spark-compose.service && sudo systemctl start spark-compose.service` (`reset-failed` efface l'etat `failed` et le compteur de relances ; l'unit du kit pose `StartLimitIntervalSec=0` pour que `start` ne soit jamais refuse avec `start request repeated too quickly`, `reset-failed` reste utile sur une unit installee avant cette ligne).
 
 ---
 
@@ -329,6 +329,22 @@ grep '^# public key:' ~/spark-backup.key
 
 > **Copier la cle privee** (`~/spark-backup.key`, ligne `AGE-SECRET-KEY-...`) dans le coffre de mots de passe de l'entreprise, puis la supprimer du serveur : `shred -u ~/spark-backup.key`. Sans elle, les archives `secrets-*.tar.age` sont illisibles. La cle **publique** (`age1...`) n'est pas un secret.
 
+> **Ce que le test de restauration prouve, et ce qu'il ne prouve pas.** `restore-test.sh` dechiffre les identifiants n8n de la copie avec la `N8N_ENCRYPTION_KEY` du **`.env` courant** de `~/infra/`, pas avec celle contenue dans l'archive `secrets-<stamp>.tar.age` du meme jeu (il ne l'ouvre jamais : la cle privee `age` n'est pas sur la machine). Il prouve donc que la cle en service lit la base sauvegardee ; il ne prouve pas que l'archive de secrets est lisible et a jour. Verifier l'archive **periodiquement, hors machine** (poste d'administration, apres `rclone copy` d'un jeu recent et du `.env` courant, ou en session SSH avec la cle privee lue depuis le coffre, jamais ecrite sur le serveur) : dechiffrer, puis comparer la cle de l'archive a celle du `.env` **sans afficher ni l'une ni l'autre** :
+>
+> ```bash
+> # Poste d'administration, dans un repertoire de travail : secrets-<stamp>.tar.age, une copie du .env
+> # courant du site (chmod 600) et la cle privee exportee du coffre (spark-backup.key, chmod 600).
+> tmp=$(mktemp -d)
+> age -d -i spark-backup.key -o "$tmp/secrets.tar" secrets-<stamp>.tar.age \
+>   && tar xf "$tmp/secrets.tar" -C "$tmp" && [ -s "$tmp/env" ] && [ -s "$tmp/n8n-config" ] \
+>   && [ "$(grep '^N8N_ENCRYPTION_KEY=' "$tmp/env" | sha256sum)" = "$(grep '^N8N_ENCRYPTION_KEY=' .env | sha256sum)" ] \
+>   && echo "archive OK : N8N_ENCRYPTION_KEY identique au .env courant" \
+>   || echo "ECART : archive illisible, incomplete ou cle differente"
+> rm -rf "$tmp" && shred -u spark-backup.key .env
+> ```
+>
+> `ECART` avec une archive recente = la cle du `.env` a change sans nouvelle sauvegarde, ou la cle privee du coffre n'est pas celle du `BACKUP_AGE_RECIPIENT` : a traiter avant toute montee de version. Rythme conseille : a chaque rotation de la cle privee ou de `BACKUP_AGE_RECIPIENT`, et au moins une fois par trimestre, note dans le runbook du site.
+
 Renseigner la cle publique dans le `.env` :
 
 ```bash
@@ -351,6 +367,7 @@ Attendu :
 - `backup.sh` ecrit `backups/LAST_OK` et `restore-test.sh` ecrit `backups/RESTORE_TEST_OK` (un horodatage chacun, uniquement en fin de succes : `cat ~/infra/backups/LAST_OK ~/infra/backups/RESTORE_TEST_OK`).
 - `backup.sh` refuse d'ecrire quoi que ce soit si `BACKUP_AGE_RECIPIENT` est vide ou n'est pas une cle `age1...` valide (ou si `age` manque) : une sauvegarde sans ses secrets n'est pas une sauvegarde. Chaque fichier est produit en `.part` et renomme seulement quand tout est controle, secrets et volumes d'abord, dump en dernier : le dump le plus recent (celui que `restore-test.sh` prend) a toujours son jeu complet.
 - Un seul `backup.sh` et un seul `restore-test.sh` a la fois : un deuxieme lancement pendant le premier sort en code 2 avec `deja en cours d'execution (verrou ...)`, sans rien toucher ni alerter.
+- `restore-test.sh` dechiffre avec la `N8N_ENCRYPTION_KEY` du **`.env` courant**, jamais avec celle de l'archive `secrets-*.tar.age` (encart de 3.b.1 : verification periodique de l'archive hors machine). Un chemin de dump passe en argument doit exister : `~/infra/scripts/restore-test.sh /chemin/inexistant.sql.gz` sort `ERREUR: dump /chemin/inexistant.sql.gz introuvable`, code 2, sans se rabattre sur le dump le plus recent.
 - `restore-test.sh` lit les images (tag + digest) dans `compose.yml` via `docker compose config` : il n'exige pas que la stack tourne. Il refuse d'abord un dump illisible ou **tronque** (derniere ligne `PostgreSQL database cluster dump complete` absente : code 2, alerte), et supprime en fin de course le conteneur jetable **avec son volume** (`docker rm -v`) : `docker volume ls` compte autant de volumes avant qu'apres, le timer quotidien ne remplit pas le disque.
 - Si `restore-test.sh` sort `base n8n vide` ou `relation "migrations" does not exist`, le dump a ete pris pendant que n8n creait encore ses tables (premier demarrage) : attendre la sonde `-n8n OK` de l'etape 3, relancer `backup.sh`, puis `restore-test.sh`.
 
@@ -566,17 +583,17 @@ Les valeurs de reference sont dans [`SECURITY.md`](SECURITY.md) §2.2. Les poser
 
 ```caddy
 header {
-    Strict-Transport-Security "max-age=63072000; includeSubDomains"
-    X-Content-Type-Options "nosniff"
-    X-Frame-Options "SAMEORIGIN"
-    Referrer-Policy "strict-origin-when-cross-origin"
-    Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
-    -X-Powered-By
-    -Server
+	Strict-Transport-Security "max-age=63072000; includeSubDomains"
+	X-Content-Type-Options "nosniff"
+	X-Frame-Options "SAMEORIGIN"
+	Referrer-Policy "strict-origin-when-cross-origin"
+	Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+	-X-Powered-By
+	-Server
 }
 ```
 
-Valider **avant** de recharger, puis recharger Caddy (le repertoire est monte : l'edition en place est vue par le conteneur) :
+Le bloc est indente en **tabulations**, comme le reste du Caddyfile du kit (format `caddy fmt`) : un bloc colle en espaces fonctionne mais fait apparaitre l'avertissement `Caddyfile input is not formatted` au `validate`/`reload`. Valider **avant** de recharger, puis recharger Caddy (le repertoire est monte : l'edition en place est vue par le conteneur) :
 
 ```bash
 cd ~/infra
@@ -710,14 +727,21 @@ diff -ru ~/infra/scripts ~/spark-kit/deploy/scripts
 ~/infra/scripts/pin-digests.sh --check ~/infra/compose.yml
 ```
 
-Lire le diff : les seules differences attendues sont celles que le site a faites lui-meme (en-tetes 5.3, CORS 5.4, fichiers `sites.d/`) ; les scripts ne se modifient pas sur le site, `diff -ru ~/infra/scripts ~/spark-kit/deploy/scripts` doit etre vide apres recopie (`cp ~/spark-kit/deploy/scripts/*.sh ~/infra/scripts/ && chmod +x ~/infra/scripts/*.sh`). Un changement de tag d'image est une **montee de version** : sauvegarde + test de restauration reussis et dates d'abord, puis `cp` du fichier concerne, `docker compose up -d`, verification. Jamais de `pull` sans l'avoir decide. Les units systemd se recopient de la meme facon (`sudo cp .../deploy/linux/systemd/spark-*.{service,timer} /etc/systemd/system/ && sudo systemctl daemon-reload`), puis `sudo systemctl start spark-compose.service` — jamais `restart` (etape 3).
+Lire le diff : les seules differences attendues sont celles que le site a faites lui-meme (en-tetes 5.3, CORS 5.4, fichiers `sites.d/`) ; les scripts ne se modifient pas sur le site, `diff -ru ~/infra/scripts ~/spark-kit/deploy/scripts` doit etre vide apres recopie (`cp ~/spark-kit/deploy/scripts/*.sh ~/infra/scripts/ && chmod +x ~/infra/scripts/*.sh`). Un changement de tag d'image est une **montee de version** : sauvegarde + test de restauration reussis et dates d'abord, puis `cp` du fichier concerne, `docker compose up -d`, verification. Jamais de `pull` sans l'avoir decide. Les units systemd se recopient de la meme facon (`sudo cp .../deploy/linux/systemd/spark-*.{service,timer} /etc/systemd/system/ && sudo systemctl daemon-reload`). Appliquer un changement de `compose.yml` ou du `.env` : `sudo systemctl reload spark-compose.service` (ou `cd ~/infra && docker compose up -d` dans le shell `spark`) — pas `start`, qui ne fait rien sur une unit active, jamais `restart`, qui coupe le site (etape 3).
 
-> **Site installe avec une version anterieure du guide** (fichiers recopies a la main en heredoc) : l'arborescence etait `~/infra/docker-compose.yml`, `~/infra/config/Caddyfile` (fichier monte seul) et des images en tags flottants ; il n'y avait ni `env.example`, ni `scripts/`, ni `sites.d/`. Transition, stack en marche, apres une sauvegarde manuelle (`docker compose exec -T postgres pg_dumpall -U postgres | gzip > ~/pg_dumpall-avant-transition.sql.gz`) :
-> 1. faire les copies de l'etape 2.2 (`compose.yml`, `env.example`, `config/caddy/`, `scripts/` sont des chemins nouveaux ; seul `config/postgres/init-db.sh` est remplace par la version du kit, sans effet : il ne rejoue jamais sur un volume existant) ;
-> 2. reporter dans `~/infra/config/caddy/Caddyfile` ce que le site avait ajoute a l'ancien `config/Caddyfile` (en-tetes 5.3, CORS), puis `docker compose -f compose.yml exec caddy caddy validate --config /etc/caddy/Caddyfile` ; reporter dans `compose.yml` les ajouts du site a `docker-compose.yml` (CORS 5.4) ;
+> **Site installe avec une version anterieure du guide** (fichiers recopies a la main en heredoc) : l'arborescence etait `~/infra/docker-compose.yml`, `~/infra/config/Caddyfile` (fichier monte seul) et des images en tags flottants ; il n'y avait ni `env.example` ni `sites.d/`, et `scripts/` existait mais etait vide. Transition, stack en marche, dans le shell `spark` et depuis `~/infra`, apres une sauvegarde manuelle (`docker compose exec -T postgres pg_dumpall -U postgres | gzip > ~/pg_dumpall-avant-transition.sql.gz`) :
+> 1. `mkdir -p ~/infra/scripts` (absent ou vide selon l'age du site), puis les copies de l'etape 2.2 (`compose.yml`, `env.example`, `config/caddy/`, `scripts/*.sh` sont des chemins nouveaux ; seul `config/postgres/init-db.sh` est remplace par la version du kit, sans effet : il ne rejoue jamais sur un volume existant) ;
+> 2. reporter dans `~/infra/config/caddy/Caddyfile` ce que le site avait ajoute a l'ancien `config/Caddyfile` (en-tetes 5.3, CORS). Valider le **nouveau** fichier avant qu'il soit monte (le conteneur en service ne voit encore que l'ancien `config/Caddyfile` : un `docker compose exec caddy caddy validate` validerait l'ancien), avec l'image Caddy que le nouveau compose fige et les variables du `.env` lues en sous-shell :
+>    ```bash
+>    (  set -a && . ./.env && set +a
+>       docker run --rm -v "$HOME/infra/config/caddy:/etc/caddy:ro" -e SPARK_PREFIX -e SPARK_DOMAIN \
+>         "$(docker compose -f compose.yml config --images | grep '^caddy:')" \
+>         caddy validate --config /etc/caddy/Caddyfile )
+>    ```
+>    attendu : `Valid configuration` ; puis reporter dans `compose.yml` les ajouts du site a `docker-compose.yml` (CORS 5.4) ;
 > 3. lire `diff -u docker-compose.yml compose.yml` : seuls les digests, les mineures figees des tags flottants (`postgres:16-alpine` → `16.16-alpine`, `caddy:2-alpine` → `2.11.9-alpine`), le montage du repertoire `./config/caddy` et les commentaires doivent differer (voir `CHANGELOG.md`) ; un autre ecart est une anomalie a comprendre avant d'aller plus loin. Les volumes nommes sont les memes (`spark_postgres_data`, ...), le projet reste `spark` : aucune donnee ne bouge ;
 > 4. `docker compose -f compose.yml up -d` (Compose recree les conteneurs dont la definition a change, les volumes sont conserves), sondes de l'etape 3, puis ranger **tout de suite** les anciens fichiers hors de `infra/` : `mv docker-compose.yml ~/docker-compose.yml.avant-transition && mv config/Caddyfile ~/Caddyfile.avant-transition` (le Caddyfile en service est desormais `config/caddy/Caddyfile`). Tant que `docker-compose.yml` et `compose.yml` coexistent, tout `docker compose` lance sans `-f` (le votre, et celui de l'**ancienne unit systemd au reboot**) affiche `Found multiple config files with supported names` et prend `compose.yml` : les etapes 1 a 3 utilisent `-f` pour cette raison, et aucun reboot ne doit avoir lieu entre la copie de l'etape 1 et ce rangement ;
-> 5. etape 2.3 (`check-env.sh` sur le `.env` existant, qui garde ses secrets ; ajouter a la main les variables nouvelles de `env.example` : `BACKUP_*`, `SPARK_ALERT_WEBHOOK`, `RESTORE_TEST_REQUIRE_CREDENTIAL`), etape 3 (service systemd du kit, `start` pas `restart`) et etape 3.b (sauvegardes).
+> 5. etape 2.3 (`check-env.sh` sur le `.env` existant, qui garde ses secrets ; ajouter a la main les variables nouvelles de `env.example` : `BACKUP_*`, `SPARK_ALERT_WEBHOOK`, `RESTORE_TEST_REQUIRE_CREDENTIAL`) ; etape 3 « Installer le service systemd » : recopier l'unit du kit (`sudo cp`, `daemon-reload`), l'unit deja active reste active et gagne `ExecReload` ; desormais un changement s'applique par `sudo systemctl reload spark-compose.service`, pas `restart` ; puis etape 3.b (sauvegardes).
 
 ---
 
@@ -743,7 +767,12 @@ Lire le diff : les seules differences attendues sont celles que le site a faites
 ### `systemctl status spark-compose.service` est `failed`, les conteneurs tournent
 
 **Cause** : `systemctl restart` (ou `start`) alors que `~/infra/.env` ou `compose.yml` manque : l'unit refuse de demarrer (`ExecStartPre`) et, au `restart`, saute volontairement le `docker compose down` pour ne pas couper le site (journal : `docker compose down NON execute`).
-**Solution** : remettre le fichier manquant (`.env` depuis la derniere archive `secrets-*.tar.age` si besoin), puis `sudo systemctl reset-failed spark-compose.service && sudo systemctl start spark-compose.service`. Sans `reset-failed`, plusieurs `start` rapproches sur une unit encore en `failed` peuvent etre refuses avec `start request repeated too quickly` (`StartLimitBurst`) ; l'unit du kit desactive cette limite (`StartLimitIntervalSec=0`), mais une unit copiee avant cette ligne l'a encore. Pour appliquer un changement en exploitation, toujours `start` (rejoue `up -d`), jamais `restart`.
+**Solution** : remettre le fichier manquant (`.env` depuis la derniere archive `secrets-*.tar.age` si besoin), puis `sudo systemctl reset-failed spark-compose.service && sudo systemctl start spark-compose.service` : c'est le **seul** cas ou `start` sert, pour sortir de l'etat `failed`. Sans `reset-failed`, plusieurs `start` rapproches sur une unit encore en `failed` peuvent etre refuses avec `start request repeated too quickly` (`StartLimitBurst`) ; l'unit du kit desactive cette limite (`StartLimitIntervalSec=0`), mais une unit copiee avant cette ligne l'a encore.
+
+### Un changement de `compose.yml` ou du `.env` n'est pas applique
+
+**Cause** : `sudo systemctl start spark-compose.service` sur une unit deja `active (exited)` : systemd ne relance pas un service actif, `docker compose up -d` n'a pas ete rejoue.
+**Solution** : `sudo systemctl reload spark-compose.service` (rejoue `up -d --remove-orphans`, avec le garde-fou `.env`/`compose.yml`), ou dans le shell `spark` : `cd ~/infra && docker compose up -d`. Verifier : `docker compose ps` (le service modifie a ete recree, `Up` depuis quelques secondes). Jamais `restart` (etape 3). Une unit copiee avant l'ajout de `ExecReload` repond `Job type reload is not applicable` : recopier l'unit du kit (section « Mettre a jour la stack »).
 
 ### n8n affiche "secure cookie" error
 

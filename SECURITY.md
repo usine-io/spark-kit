@@ -52,13 +52,13 @@ Sur **chaque vhost** du Caddyfile du site (`infra/config/caddy/Caddyfile`, copie
 
 ```caddy
 header {
-    Strict-Transport-Security "max-age=63072000; includeSubDomains"
-    X-Content-Type-Options "nosniff"
-    X-Frame-Options "SAMEORIGIN"
-    Referrer-Policy "strict-origin-when-cross-origin"
-    Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
-    -X-Powered-By
-    -Server
+	Strict-Transport-Security "max-age=63072000; includeSubDomains"
+	X-Content-Type-Options "nosniff"
+	X-Frame-Options "SAMEORIGIN"
+	Referrer-Policy "strict-origin-when-cross-origin"
+	Permissions-Policy "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
+	-X-Powered-By
+	-Server
 }
 ```
 
