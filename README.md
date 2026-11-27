@@ -72,6 +72,7 @@ Spark se lit comme **3 briques empilables** : une solution technique qui tourne 
 | Parcours | Guide | Pour quoi | Contenu |
 |----------|-------|-----------|---------|
 | **A — Bac a sable** | **[INSTALL.md](INSTALL.md)** | Mac Mini (macOS + Colima) : prototyper, former, tester. Docker tourne dans une VM : latence elevee, s'effondre sous charge. | Homebrew, Colima, LaunchAgents, etapes 1→4, depannage |
+| A' — Bac a sable sans NocoDB | [INSTALL-SANS-NOCODB.md](INSTALL-SANS-NOCODB.md) | Meme Mac, stack Postgres + n8n + Caddy (+ tunnel), NocoDB coupe par l'override `deploy/compose.sans-nocodb.yml`. | Variante du parcours A, reactivable |
 | **B — Production** | **[INSTALL-LINUX.md](INSTALL-LINUX.md)** | Serveur Linux / VPS (Debian 12+, Ubuntu 22.04+) : Docker natif, systemd, sauvegardes planifiees et testees. | Docker CE, systemd, sauvegarde + test de restauration, etapes 1→7, depannage |
 | — | **[CLAUDE-CODE.md](CLAUDE-CODE.md)** | Tous | Configurer Claude Code (skills, MCP n8n, CLI NocoDB, smoke test) |
 

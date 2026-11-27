@@ -16,6 +16,7 @@ Ne pas recreer ici une copie du briefing : elle redivergerait. Toute amelioratio
 |---------|------|
 | `README.md` | Presentation, stack, roles, prerequis |
 | `INSTALL.md` | Installation macOS (Colima) |
+| `INSTALL-SANS-NOCODB.md` | Variante macOS sans NocoDB (override `deploy/compose.sans-nocodb.yml`) |
 | `INSTALL-LINUX.md` | Installation Linux (serveur de production) |
 | `CLAUDE-CODE.md` | Configuration de Claude Code (skills, MCP, smoke test) |
 | `SECURITY.md` | Standard de durcissement, modele de menace, audit recurrent |
@@ -23,7 +24,7 @@ Ne pas recreer ici une copie du briefing : elle redivergerait. Toute amelioratio
 | `ROADMAP.md` | Roadmap du kit |
 | `CHANGELOG.md` | Une entree par lot de mise a jour du kit |
 | `UPGRADES.md` | Procedure generale de montee de version et fiches (n8n, Caddy, cloudflared hote → conteneur), retour arriere compris |
-| `deploy/` | **Source unique de l'infra** : `compose.yml`, `compose.runners.yml` (override du sidecar runner), `env.example`, `config/caddy/`, `config/postgres/`, `scripts/` (dont `check-env.sh`, `backup.sh`, `restore-test.sh`, `restore-n8n.sh`, `n8n-releve.sh`, `tunnel-config.sh`, `cloudflared-host-guard.sh`), `linux/systemd/`, `macos/launchd/` |
+| `deploy/` | **Source unique de l'infra** : `compose.yml`, `compose.runners.yml` (override du sidecar runner), `compose.sans-nocodb.yml` (override sans NocoDB), `env.example`, `config/caddy/`, `config/postgres/`, `scripts/` (dont `check-env.sh`, `backup.sh`, `restore-test.sh`, `restore-n8n.sh`, `n8n-releve.sh`, `tunnel-config.sh`, `cloudflared-host-guard.sh`), `linux/systemd/`, `macos/launchd/` |
 
 ## Infra : une seule source
 

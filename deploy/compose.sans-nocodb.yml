@@ -1,0 +1,16 @@
+# deploy/compose.sans-nocodb.yml — override optionnel : la stack sans NocoDB.
+#
+# Usage, dans le .env du site : COMPOSE_FILE=compose.yml:compose.sans-nocodb.yml
+# (avec le sidecar runner : COMPOSE_FILE=compose.yml:compose.runners.yml:compose.sans-nocodb.yml).
+#
+# NocoDB ne demarre que si on demande le profil `nocodb` ; Caddy ne l'attend plus. Le vhost
+# `-db` reste dans le Caddyfile et repond 502 : ne pas creer son DNS. Les variables NocoDB du
+# .env restent (check-env.sh les exige) ; init-db.sh cree une base `nocodb` vide, sans effet.
+# Reactiver : retirer ce fichier de COMPOSE_FILE, puis `docker compose up -d`.
+# Exige Compose >= 2.24 (balise `!override`).
+services:
+  nocodb:
+    profiles: [nocodb]
+  caddy:
+    depends_on: !override
+      - n8n

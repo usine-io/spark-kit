@@ -2,6 +2,13 @@
 
 Une entree par lot de mise a jour. Les versions d'images sont celles de `deploy/compose.yml` (tag + digest).
 
+## Hors lot — Variante macOS sans NocoDB
+
+**Ajoute**
+
+- `deploy/compose.sans-nocodb.yml` : override qui met NocoDB derriere un profil `nocodb` (jamais active par le site) et retire la dependance de Caddy (`depends_on: !override`, Compose >= 2.24). Active par `COMPOSE_FILE=compose.yml:compose.sans-nocodb.yml` dans le `.env` ; reactivable en le retirant. Le vhost `-db` reste et repond 502 ; les variables NocoDB du `.env` restent.
+- `INSTALL-SANS-NOCODB.md` : le parcours macOS avec cet override (Colima a 8 Go pour un Mac 32 Go, deux sous-domaines `-n8n` et `-app`, sondes sans NocoDB, trois conteneurs puis quatre avec le tunnel), en attendant la sortie de NocoDB du kit (lot 3).
+
 ## Lot 2 — Montee n8n / Caddy / cloudflared, healthchecks, maintenance
 
 **Versions** : `n8nio/n8n:2.19.4` → **`2.49.6`** (Node 24 → 26, 201 migrations de base a sens unique), `caddy:2.11.9-alpine` (deja servie, inchangee), **`cloudflare/cloudflared:2026.11.2`** dans le compose (profil `tunnel`), `n8nio/runners:2.49.6` (profil `runners`). `postgres:16.16-alpine` et `nocodb/nocodb:2026.04.5` inchanges (PostgreSQL 18 = lot 4, sortie de NocoDB = lot 3). Tous les digests releves par `pin-digests.sh`.
